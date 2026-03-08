@@ -62,8 +62,19 @@ bot = commands.Bot(command_prefix=PREFIX, intents=intents)
 bot.remove_command("help")
 
 # ─────────────────────────────────────────────────────────────
-#  BASE DE DATOS (puntos.json)
+#  PERMISOS
 # ─────────────────────────────────────────────────────────────
+def es_admin(ctx) -> bool:
+    return ctx.author.guild_permissions.administrator
+
+def es_staff(ctx) -> bool:
+    return (
+        ctx.author.guild_permissions.administrator
+        or ctx.author.guild_permissions.manage_roles
+        or any(r.name in ROLES_STAFF_CFG for r in ctx.author.roles)
+    )
+
+
 DB_FILE = "puntos.json"
 
 def cargar_db() -> dict:
@@ -1366,16 +1377,6 @@ async def serverinfo(ctx):
     embed.add_field(name="📅 Creado", value=g.created_at.strftime("%d/%m/%Y"), inline=True)
     await ctx.send(embed=embed)
 
-
-def es_admin(ctx) -> bool:
-    return ctx.author.guild_permissions.administrator
-
-def es_staff(ctx) -> bool:
-    return (
-        ctx.author.guild_permissions.administrator
-        or ctx.author.guild_permissions.manage_roles
-        or any(r.name in ROLES_STAFF_CFG for r in ctx.author.roles)
-    )
 
 # ─────────────────────────────────────────────────────────────
 #  EVENTOS
