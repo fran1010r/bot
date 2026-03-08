@@ -32,13 +32,16 @@ log = logging.getLogger("bot")
 CONFIG_FILE = "config.json"
 
 def cargar_config() -> dict:
-    if not os.path.exists(CONFIG_FILE):
-        log.critical(f"No se encontró {CONFIG_FILE} — créalo con tu token.")
-        sys.exit(1)
-    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-        cfg = json.load(f)
+    cfg = {}
+    if os.path.exists(CONFIG_FILE):
+        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+            cfg = json.load(f)
+    # Token desde variable de entorno (Railway) o desde config.json
+    token_env = os.environ.get("DISCORD_TOKEN")
+    if token_env:
+        cfg["token"] = token_env
     if cfg.get("token") in ("", "TU_TOKEN_AQUÍ", None):
-        log.critical("El token en config.json está vacío. Ponlo antes de iniciar.")
+        log.critical("No se encontró token. Ponlo en DISCORD_TOKEN (variable de entorno) o en config.json.")
         sys.exit(1)
     return cfg
 
