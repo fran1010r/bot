@@ -7,6 +7,10 @@ import sys
 import time
 import traceback
 import logging
+import random
+import aiohttp
+from datetime import datetime, timezone
+from collections import defaultdict
 
 # ─────────────────────────────────────────────────────────────
 #  LOGGING — muestra info con fecha/hora en consola y en archivo
@@ -28,16 +32,13 @@ log = logging.getLogger("bot")
 CONFIG_FILE = "config.json"
 
 def cargar_config() -> dict:
-    cfg = {}
-    if os.path.exists(CONFIG_FILE):
-        with open(CONFIG_FILE, "r", encoding="utf-8") as f:
-            cfg = json.load(f)
-    # El token puede venir de variable de entorno (Railway) o del config.json
-    token_env = os.environ.get("DISCORD_TOKEN")
-    if token_env:
-        cfg["token"] = token_env
+    if not os.path.exists(CONFIG_FILE):
+        log.critical(f"No se encontró {CONFIG_FILE} — créalo con tu token.")
+        sys.exit(1)
+    with open(CONFIG_FILE, "r", encoding="utf-8") as f:
+        cfg = json.load(f)
     if cfg.get("token") in ("", "TU_TOKEN_AQUÍ", None):
-        log.critical("No se encontró token. Ponlo en DISCORD_TOKEN (variable de entorno) o en config.json.")
+        log.critical("El token en config.json está vacío. Ponlo antes de iniciar.")
         sys.exit(1)
     return cfg
 
@@ -244,9 +245,1125 @@ def barra_progreso(puntos: int, rango: dict, siguiente: dict) -> str:
     barras = int(progreso * 20)
     return f"`{'█' * barras}{'░' * (20 - barras)}` {int(progreso * 100)}%"
 
+# ═════════════════════════════════════════════════════════════
+#  🎭 ROLEPLAY
+# ═════════════════════════════════════════════════════════════
+
+PAREJAS_FILE = "parejas.json"
+FAMILIA_FILE  = "familia.json"
+
+def cargar_parejas() -> dict:
+    if os.path.exists(PAREJAS_FILE):
+        with open(PAREJAS_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def guardar_parejas(data: dict):
+    with open(PAREJAS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+def cargar_familia() -> dict:
+    if os.path.exists(FAMILIA_FILE):
+        with open(FAMILIA_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def guardar_familia(data: dict):
+    with open(FAMILIA_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+propuestas_pendientes = {}
+
+@bot.command(name="casar", aliases=["proponer", "marry"])
+async def casar(ctx, member: discord.Member):
+    """🎭 Propón matrimonio. Uso: !casar @usuario"""
+    if member == ctx.author:
+        return await ctx.send("❌ No puedes casarte contigo mismo 😅")
+    if member.bot:
+        return await ctx.send("❌ Los bots no se casan 🤖")
+    parejas = cargar_parejas()
+    uid = str(ctx.author.id)
+    mid = str(member.id)
+    if uid in parejas:
+        pareja_actual = parejas[uid]
+        return await ctx.send(f"💍 Ya estás casado/a con <@{pareja_actual}>. Usa `!divorcio` primero.")
+    if mid in parejas:
+        return await ctx.send(f"💔 {member.mention} ya está casado/a con alguien más.")
+
+    propuestas_pendientes[mid] = ctx.author.id
+    embed = discord.Embed(
+        title="💍 ¡Propuesta de Matrimonio!",
+        description=f"{ctx.author.mention} le propone matrimonio a {member.mention} 💕\n\n"
+                    f"{member.mention} responde con `!aceptar` o `!rechazar` en los próximos 60 segundos.",
+        color=discord.Color.pink()
+    )
+    await ctx.send(embed=embed)
+
+    await asyncio.sleep(60)
+    if propuestas_pendientes.get(mid) == ctx.author.id:
+        propuestas_pendientes.pop(mid, None)
+        await ctx.send(f"⌛ {member.mention} no respondió a tiempo. La propuesta expiró.")
+
+@bot.command(name="aceptar")
+async def aceptar(ctx):
+    """🎭 Acepta una propuesta de matrimonio."""
+    mid = str(ctx.author.id)
+    if ctx.author.id not in propuestas_pendientes:
+        return await ctx.send("❌ No tienes ninguna propuesta pendiente.")
+    autor_id = propuestas_pendientes.pop(ctx.author.id)
+    parejas = cargar_parejas()
+    parejas[str(autor_id)] = mid
+    parejas[mid] = str(autor_id)
+    guardar_parejas(parejas)
+    embed = discord.Embed(
+        title="💒 ¡Se casaron!",
+        description=f"💍 {ctx.author.mention} y <@{autor_id}> ahora están casados. ¡Felicidades! 🎉",
+        color=discord.Color.gold()
+    )
+    await ctx.send(embed=embed)
+
+@bot.command(name="rechazar")
+async def rechazar(ctx):
+    """🎭 Rechaza una propuesta de matrimonio."""
+    if ctx.author.id not in propuestas_pendientes:
+        return await ctx.send("❌ No tienes ninguna propuesta pendiente.")
+    autor_id = propuestas_pendientes.pop(ctx.author.id)
+    await ctx.send(f"💔 {ctx.author.mention} rechazó la propuesta de <@{autor_id}>. Qué triste...")
+
+@bot.command(name="divorcio", aliases=["divorciar"])
+async def divorcio(ctx):
+    """🎭 Divorciarse de tu pareja."""
+    parejas = cargar_parejas()
+    uid = str(ctx.author.id)
+    if uid not in parejas:
+        return await ctx.send("❌ No estás casado/a con nadie.")
+    ex_id = parejas.pop(uid)
+    parejas.pop(str(ex_id), None)
+    guardar_parejas(parejas)
+    embed = discord.Embed(
+        title="💔 Divorcio",
+        description=f"{ctx.author.mention} se divorció de <@{ex_id}>. Fin de una era...",
+        color=discord.Color.red()
+    )
+    await ctx.send(embed=embed)
+
+@bot.command(name="pareja", aliases=["esposo", "esposa"])
+async def ver_pareja(ctx, member: discord.Member = None):
+    """🎭 Ver quién es tu pareja."""
+    member = member or ctx.author
+    parejas = cargar_parejas()
+    uid = str(member.id)
+    if uid not in parejas:
+        return await ctx.send(f"💔 {member.display_name} no está casado/a con nadie.")
+    pareja_id = parejas[uid]
+    embed = discord.Embed(
+        title="💍 Estado Civil",
+        description=f"{member.mention} está casado/a con <@{pareja_id}> 💕",
+        color=discord.Color.pink()
+    )
+    await ctx.send(embed=embed)
+
+@bot.command(name="adoptar")
+async def adoptar(ctx, member: discord.Member):
+    """🎭 Adopta a alguien como hijo/a. Uso: !adoptar @usuario"""
+    if member == ctx.author or member.bot:
+        return await ctx.send("❌ No puedes adoptarte a ti mismo ni a un bot.")
+    familia = cargar_familia()
+    uid = str(ctx.author.id)
+    mid = str(member.id)
+    hijos = familia.get(uid, [])
+    if mid in hijos:
+        return await ctx.send(f"❌ {member.mention} ya es tu hijo/a.")
+    hijos.append(mid)
+    familia[uid] = hijos
+    guardar_familia(familia)
+    embed = discord.Embed(
+        title="👨‍👧 ¡Adopción!",
+        description=f"{ctx.author.mention} adoptó a {member.mention} 🏠💕",
+        color=discord.Color.green()
+    )
+    await ctx.send(embed=embed)
+
+@bot.command(name="familia")
+async def ver_familia(ctx, member: discord.Member = None):
+    """🎭 Ver tu familia."""
+    member = member or ctx.author
+    familia = cargar_familia()
+    parejas = cargar_parejas()
+    uid = str(member.id)
+    hijos = familia.get(uid, [])
+    pareja = parejas.get(uid)
+    embed = discord.Embed(title=f"👨‍👩‍👧 Familia de {member.display_name}", color=discord.Color.green())
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="💍 Pareja", value=f"<@{pareja}>" if pareja else "Soltero/a", inline=False)
+    embed.add_field(name="👶 Hijos", value="\n".join(f"<@{h}>" for h in hijos) if hijos else "Sin hijos", inline=False)
+    await ctx.send(embed=embed)
+
+
+# ═════════════════════════════════════════════════════════════
+#  🔮 HORÓSCOPO Y PERSONALIDAD
+# ═════════════════════════════════════════════════════════════
+
+SIGNOS = {
+    "aries": ("♈", "21 mar – 19 abr", "Eres una persona valiente, apasionada y directa. Hoy el fuego interior te guía."),
+    "tauro": ("♉", "20 abr – 20 may", "Eres leal, paciente y muy determinado. Hoy la estabilidad es tu aliada."),
+    "geminis": ("♊", "21 may – 20 jun", "Eres curioso, adaptable y comunicativo. Hoy las palabras son tu poder."),
+    "cancer": ("♋", "21 jun – 22 jul", "Eres intuitivo, protector y empático. Hoy el corazón te dice la verdad."),
+    "leo": ("♌", "23 jul – 22 ago", "Eres carismático, generoso y líder nato. Hoy el mundo te pertenece."),
+    "virgo": ("♍", "23 ago – 22 sep", "Eres analítico, detallista y perfeccionista. Hoy los detalles marcan la diferencia."),
+    "libra": ("♎", "23 sep – 22 oct", "Eres justo, diplomático y encantador. Hoy el equilibrio es tu meta."),
+    "escorpio": ("♏", "23 oct – 21 nov", "Eres intenso, misterioso y poderoso. Hoy la transformación te espera."),
+    "sagitario": ("♐", "22 nov – 21 dic", "Eres aventurero, optimista y filosófico. Hoy la libertad te llama."),
+    "capricornio": ("♑", "22 dic – 19 ene", "Eres ambicioso, disciplinado y responsable. Hoy el esfuerzo da frutos."),
+    "acuario": ("♒", "20 ene – 18 feb", "Eres innovador, independiente y humanitario. Hoy piensas fuera de la caja."),
+    "piscis": ("♓", "19 feb – 20 mar", "Eres compasivo, artístico y soñador. Hoy la intuición es tu brújula."),
+}
+
+PREDICCIONES = [
+    "🌟 Un encuentro inesperado cambiará tu día.",
+    "💰 El dinero fluye hacia ti si actúas con confianza.",
+    "❤️ El amor está más cerca de lo que crees.",
+    "⚠️ Evita tomar decisiones impulsivas hoy.",
+    "🎯 Tu concentración está al máximo, aprovéchala.",
+    "🌈 Un buen día para empezar algo nuevo.",
+    "🤝 Una amistad te sorprenderá positivamente.",
+    "😴 Descansar hoy te dará energía para mañana.",
+    "🔥 Tu energía es imparable, úsala sabiamente.",
+    "🌙 La noche traerá claridad a tus dudas.",
+]
+
+@bot.command(name="horoscopo", aliases=["signo", "zodiac"])
+async def horoscopo(ctx, *, signo: str):
+    """🔮 Tu horóscopo. Uso: !horoscopo aries"""
+    signo = signo.lower().strip()
+    if signo not in SIGNOS:
+        lista = ", ".join(f"`{s}`" for s in SIGNOS)
+        return await ctx.send(f"❌ Signo no válido. Opciones: {lista}")
+    emoji, fechas, descripcion = SIGNOS[signo]
+    prediccion = random.choice(PREDICCIONES)
+    suerte = random.randint(1, 100)
+    color_val = random.randint(0x880000, 0xFFFFFF)
+    embed = discord.Embed(title=f"{emoji} {signo.capitalize()}", color=color_val)
+    embed.add_field(name="📅 Fechas", value=fechas, inline=True)
+    embed.add_field(name="🍀 Suerte hoy", value=f"{suerte}%", inline=True)
+    embed.add_field(name="✨ Personalidad", value=descripcion, inline=False)
+    embed.add_field(name="🔮 Predicción", value=prediccion, inline=False)
+    embed.set_footer(text=f"Consultado por {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+TIPOS_PERSONALIDAD = [
+    ("🔥 Alma de Fuego", "Eres intenso/a, apasionado/a y siempre vas al frente sin miedo."),
+    ("🌊 Espíritu del Agua", "Eres tranquilo/a, profundo/a y te adaptas a todo con facilidad."),
+    ("🌪️ Mente del Viento", "Eres veloz, creativo/a y siempre tienes mil ideas en la cabeza."),
+    ("🌍 Corazón de Tierra", "Eres estable, confiable y la roca en la que todos se apoyan."),
+    ("⚡ Rayo de Energía", "Tienes una energía inagotable que contagia a todos a tu alrededor."),
+    ("🌙 Alma Lunar", "Eres misterioso/a, intuitivo/a y muy conectado/a con tus emociones."),
+    ("☀️ Espíritu Solar", "Irradias positividad, carisma y alegría dondequiera que vayas."),
+    ("❄️ Mente de Hielo", "Eres frío/a bajo presión, estratégico/a y muy analítico/a."),
+]
+
+@bot.command(name="personalidad", aliases=["quiensoy", "tipo"])
+async def personalidad(ctx, member: discord.Member = None):
+    """🔮 Descubre tu tipo de personalidad."""
+    member = member or ctx.author
+    seed = member.id + datetime.now(timezone.utc).toordinal()
+    random.seed(seed)
+    tipo, desc = random.choice(TIPOS_PERSONALIDAD)
+    random.seed()
+    embed = discord.Embed(title=f"🔮 Personalidad de {member.display_name}", description=f"**{tipo}**\n\n{desc}", color=discord.Color.purple())
+    embed.set_thumbnail(url=member.display_avatar.url)
+    await ctx.send(embed=embed)
+
+@bot.command(name="compatibilidad", aliases=["compat", "shipper"])
+async def compatibilidad(ctx, member: discord.Member):
+    """🔮 Compatibilidad entre dos personas. Uso: !compatibilidad @usuario"""
+    ids = sorted([ctx.author.id, member.id])
+    random.seed(ids[0] + ids[1])
+    porcentaje = random.randint(1, 100)
+    random.seed()
+    if porcentaje >= 80:
+        estado = "💞 ¡Almas gemelas!"
+        color = discord.Color.pink()
+    elif porcentaje >= 60:
+        estado = "💕 Buena compatibilidad"
+        color = discord.Color.magenta()
+    elif porcentaje >= 40:
+        estado = "🤝 Compatible con esfuerzo"
+        color = discord.Color.yellow()
+    else:
+        estado = "💔 Difícil combinación"
+        color = discord.Color.red()
+    barra = "█" * (porcentaje // 10) + "░" * (10 - porcentaje // 10)
+    embed = discord.Embed(title="💘 Compatibilidad", color=color)
+    embed.add_field(name="👫 Pareja", value=f"{ctx.author.mention} & {member.mention}", inline=False)
+    embed.add_field(name="📊 Resultado", value=f"`{barra}` **{porcentaje}%**", inline=False)
+    embed.add_field(name="💬 Estado", value=estado, inline=False)
+    await ctx.send(embed=embed)
+
+
+# ═════════════════════════════════════════════════════════════
+#  🃏 TRIVIA Y ADIVINA EL NÚMERO
+# ═════════════════════════════════════════════════════════════
+
+juegos_activos = {}
+
+PREGUNTAS_TRIVIA = [
+    {"p": "¿Cuántos lados tiene un hexágono?", "r": "6", "ops": ["4", "5", "6", "8"]},
+    {"p": "¿Cuál es la capital de Japón?", "r": "tokio", "ops": ["osaka", "tokio", "beijing", "seul"]},
+    {"p": "¿Cuántos planetas tiene el sistema solar?", "r": "8", "ops": ["7", "8", "9", "10"]},
+    {"p": "¿En qué año llegó el hombre a la luna?", "r": "1969", "ops": ["1965", "1969", "1971", "1973"]},
+    {"p": "¿Cuál es el elemento más abundante en el universo?", "r": "hidrogeno", "ops": ["oxigeno", "helio", "hidrogeno", "carbono"]},
+    {"p": "¿Cuántos colores tiene el arcoíris?", "r": "7", "ops": ["5", "6", "7", "8"]},
+    {"p": "¿Qué animal es el más rápido del mundo?", "r": "guepardo", "ops": ["leon", "guepardo", "tigre", "aguila"]},
+    {"p": "¿Cuál es el océano más grande?", "r": "pacifico", "ops": ["atlantico", "indico", "pacifico", "artico"]},
+    {"p": "¿Cuántos huesos tiene el cuerpo humano adulto?", "r": "206", "ops": ["180", "196", "206", "220"]},
+    {"p": "¿Cuál es el país más grande del mundo?", "r": "rusia", "ops": ["canada", "china", "rusia", "eeuu"]},
+    {"p": "¿Qué planeta es conocido como el planeta rojo?", "r": "marte", "ops": ["venus", "marte", "jupiter", "saturno"]},
+    {"p": "¿Cuánto es 15 x 15?", "r": "225", "ops": ["200", "215", "225", "250"]},
+    {"p": "¿Cuál es el metal más caro del mundo?", "r": "rodio", "ops": ["oro", "platino", "rodio", "iridio"]},
+    {"p": "¿En qué continente está Brasil?", "r": "america del sur", "ops": ["africa", "america central", "america del sur", "europa"]},
+    {"p": "¿Cuántos segundos tiene una hora?", "r": "3600", "ops": ["1200", "3000", "3600", "4800"]},
+]
+
+@bot.command(name="trivia")
+async def trivia(ctx):
+    """🃏 Responde una pregunta de trivia."""
+    if ctx.channel.id in juegos_activos:
+        return await ctx.send("❌ Ya hay una trivia activa en este canal. Espera que termine.")
+    pregunta = random.choice(PREGUNTAS_TRIVIA)
+    ops = pregunta["ops"].copy()
+    random.shuffle(ops)
+    numeros = ["1️⃣","2️⃣","3️⃣","4️⃣"]
+    desc = "\n".join(f"{numeros[i]} {op.capitalize()}" for i, op in enumerate(ops))
+    embed = discord.Embed(title="🃏 Trivia", description=f"**{pregunta['p']}**\n\n{desc}", color=discord.Color.blurple())
+    embed.set_footer(text="Responde con el número correcto en 20 segundos")
+    msg = await ctx.send(embed=embed)
+    for emoji in numeros[:len(ops)]:
+        await msg.add_reaction(emoji)
+    juegos_activos[ctx.channel.id] = True
+
+    def check(reaction, user):
+        return (
+            reaction.message.id == msg.id and
+            not user.bot and
+            str(reaction.emoji) in numeros[:len(ops)]
+        )
+
+    try:
+        reaction, user = await bot.wait_for("reaction_add", timeout=20.0, check=check)
+        idx = numeros.index(str(reaction.emoji))
+        elegida = ops[idx]
+        if elegida.lower() == pregunta["r"].lower():
+            await ctx.send(f"✅ ¡{user.mention} acertó! La respuesta era **{pregunta['r'].capitalize()}** 🎉")
+        else:
+            await ctx.send(f"❌ {user.mention} falló. La respuesta correcta era **{pregunta['r'].capitalize()}**.")
+    except asyncio.TimeoutError:
+        await ctx.send(f"⌛ Tiempo agotado. La respuesta era **{pregunta['r'].capitalize()}**.")
+    finally:
+        juegos_activos.pop(ctx.channel.id, None)
+
+
+@bot.command(name="adivina", aliases=["guess", "numero"])
+async def adivina_numero(ctx, maximo: int = 100):
+    """🃏 Adivina el número. Uso: !adivina [máximo]"""
+    if ctx.channel.id in juegos_activos:
+        return await ctx.send("❌ Ya hay un juego activo en este canal.")
+    if maximo < 5 or maximo > 1000:
+        return await ctx.send("❌ El máximo debe ser entre 5 y 1000.")
+    numero = random.randint(1, maximo)
+    juegos_activos[ctx.channel.id] = True
+    intentos = 0
+    max_intentos = 5
+
+    embed = discord.Embed(
+        title="🔢 Adivina el Número",
+        description=f"Estoy pensando en un número entre **1 y {maximo}**.\nTienes **{max_intentos} intentos**. ¡Escribe tu respuesta!",
+        color=discord.Color.blurple()
+    )
+    await ctx.send(embed=embed)
+
+    def check(m):
+        return m.channel == ctx.channel and not m.author.bot and m.content.isdigit()
+
+    while intentos < max_intentos:
+        try:
+            msg = await bot.wait_for("message", timeout=30.0, check=check)
+        except asyncio.TimeoutError:
+            juegos_activos.pop(ctx.channel.id, None)
+            return await ctx.send(f"⌛ Tiempo agotado. El número era **{numero}**.")
+        intento = int(msg.content)
+        intentos += 1
+        restantes = max_intentos - intentos
+        if intento == numero:
+            juegos_activos.pop(ctx.channel.id, None)
+            return await ctx.send(f"🎉 ¡{msg.author.mention} acertó! El número era **{numero}** en {intentos} intento(s)!")
+        elif intento < numero:
+            pista = "📈 El número es **mayor**."
+        else:
+            pista = "📉 El número es **menor**."
+        if restantes > 0:
+            await ctx.send(f"{pista} Te quedan **{restantes}** intento(s).")
+        else:
+            await ctx.send(f"😢 Sin más intentos. El número era **{numero}**.")
+    juegos_activos.pop(ctx.channel.id, None)
+
+
+# ═════════════════════════════════════════════════════════════
+#  💬 FRASES DE PERSONAJES
+# ═════════════════════════════════════════════════════════════
+
+FRASES_PERSONAJES = {
+    "naruto": [
+        "¡No voy a rendirme, ese es mi camino del ninja!",
+        "¡Cree en ti mismo! Eso es el verdadero poder del ninja.",
+        "¡No me importa lo que digas! ¡Voy a ser Hokage!",
+        "El dolor te hace más fuerte. Las lágrimas te hacen más valiente.",
+    ],
+    "goku": [
+        "¡Soy un Saiyan que vive en la Tierra!",
+        "¡Kamehameha!",
+        "Lo siento, pero no puedo perder. Hay gente que me importa.",
+        "Cada límite que rompes te hace más fuerte.",
+    ],
+    "luffy": [
+        "¡Voy a ser el Rey de los Piratas!",
+        "No me importa el título. Solo quiero ser libre.",
+        "¡Un hombre que no puede proteger a sus amigos no vale nada!",
+        "¡Shanks me dio este sombrero. Lo cuidaré con mi vida!",
+    ],
+    "zoro": [
+        "Nada me sucede hasta que yo digo que algo me sucede.",
+        "Cuando el mundo haya decidido que voy a morir, yo ya habré decidido vivir.",
+        "¡Nunca perderé de nuevo!",
+        "Solo hay un camino: hacia adelante.",
+    ],
+    "eren": [
+        "Si no luchas, no puedes ganar.",
+        "Seguiré adelante hasta que mis enemigos sean destruidos.",
+        "La libertad... es lo único que siempre he querido.",
+    ],
+    "levi": [
+        "La única forma de encontrar la respuesta correcta es elegir y no arrepentirte.",
+        "Nadie puede saber cuál será el resultado. Solo sigue hacia adelante.",
+        "Tus camaradas confían en ti. Sigue adelante.",
+    ],
+    "light": [
+        "Soy el nuevo dios de este mundo.",
+        "El que gana tiene razón, y el que pierde está equivocado.",
+        "Este mundo podrido necesita ser cambiado.",
+    ],
+    "itachi": [
+        "Eres débil. ¿Por qué eres débil? Porque te falta odio.",
+        "El perdón es la base de la paz.",
+        "No importa cuánto crezcas, siempre seré tu hermano mayor.",
+    ],
+}
+
+@bot.command(name="frase_personaje", aliases=["fp", "anime_quote"])
+async def frase_personaje(ctx, *, personaje: str = None):
+    """💬 Frase de un personaje. Uso: !fp [personaje]"""
+    personajes_disponibles = list(FRASES_PERSONAJES.keys())
+    if personaje is None:
+        personaje = random.choice(personajes_disponibles)
+    personaje = personaje.lower().strip()
+    if personaje not in FRASES_PERSONAJES:
+        lista = ", ".join(f"`{p}`" for p in personajes_disponibles)
+        return await ctx.send(f"❌ Personaje no encontrado. Disponibles: {lista}")
+    frase = random.choice(FRASES_PERSONAJES[personaje])
+    colores = [discord.Color.red(), discord.Color.blue(), discord.Color.green(),
+               discord.Color.purple(), discord.Color.orange(), discord.Color.dark_gold()]
+    embed = discord.Embed(
+        title=f"💬 {personaje.capitalize()}",
+        description=f"*\"{frase}\"*",
+        color=random.choice(colores)
+    )
+    embed.set_footer(text=f"Pedido por {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+@bot.command(name="personajes_lista", aliases=["pl"])
+async def personajes_lista(ctx):
+    """💬 Ver personajes disponibles."""
+    lista = ", ".join(f"`{p.capitalize()}`" for p in FRASES_PERSONAJES)
+    embed = discord.Embed(title="💬 Personajes disponibles", description=lista, color=discord.Color.blurple())
+    embed.set_footer(text=f"Usa !fp <personaje> para ver una frase")
+    await ctx.send(embed=embed)
+
+
+# ═════════════════════════════════════════════════════════════
+#  🔒 GESTIÓN DE CANALES (Admin)
+# ═════════════════════════════════════════════════════════════
+
+@bot.command(name="lock", aliases=["bloquear"])
+@commands.check(es_admin)
+async def lock(ctx, canal: discord.TextChannel = None, *, razon: str = "Sin razón"):
+    """🔒 ADMIN — Bloquea un canal. Uso: !lock [#canal] [razón]"""
+    canal = canal or ctx.channel
+    overwrite = canal.overwrites_for(ctx.guild.default_role)
+    overwrite.send_messages = False
+    await canal.set_permissions(ctx.guild.default_role, overwrite=overwrite, reason=f"[{ctx.author}] {razon}")
+    embed = discord.Embed(title="🔒 Canal Bloqueado", description=f"{canal.mention} bloqueado.\n📋 Razón: {razon}", color=discord.Color.red())
+    embed.set_footer(text=f"Por {ctx.author.display_name}")
+    await canal.send(embed=embed)
+    if canal != ctx.channel:
+        await ctx.send(f"✅ {canal.mention} bloqueado.")
+
+@bot.command(name="unlock", aliases=["desbloquear"])
+@commands.check(es_admin)
+async def unlock(ctx, canal: discord.TextChannel = None, *, razon: str = "Sin razón"):
+    """🔒 ADMIN — Desbloquea un canal. Uso: !unlock [#canal] [razón]"""
+    canal = canal or ctx.channel
+    overwrite = canal.overwrites_for(ctx.guild.default_role)
+    overwrite.send_messages = None
+    await canal.set_permissions(ctx.guild.default_role, overwrite=overwrite, reason=f"[{ctx.author}] {razon}")
+    embed = discord.Embed(title="🔓 Canal Desbloqueado", description=f"{canal.mention} desbloqueado.\n📋 Razón: {razon}", color=discord.Color.green())
+    embed.set_footer(text=f"Por {ctx.author.display_name}")
+    await canal.send(embed=embed)
+    if canal != ctx.channel:
+        await ctx.send(f"✅ {canal.mention} desbloqueado.")
+
+@bot.command(name="lockall", aliases=["bloquear_todo"])
+@commands.check(es_admin)
+async def lockall(ctx, *, razon: str = "Sin razón"):
+    """🔒 ADMIN — Bloquea todos los canales."""
+    msg = await ctx.send("⏳ Bloqueando todos los canales...")
+    count = 0
+    for c in ctx.guild.text_channels:
+        try:
+            ow = c.overwrites_for(ctx.guild.default_role)
+            ow.send_messages = False
+            await c.set_permissions(ctx.guild.default_role, overwrite=ow, reason=f"[LockAll] {ctx.author}")
+            count += 1
+        except Exception:
+            pass
+    embed = discord.Embed(title="🔒 Servidor Bloqueado", description=f"**{count}** canales bloqueados.\n📋 Razón: {razon}", color=discord.Color.red())
+    embed.set_footer(text=f"Por {ctx.author.display_name}")
+    await msg.edit(content=None, embed=embed)
+
+@bot.command(name="unlockall", aliases=["desbloquear_todo"])
+@commands.check(es_admin)
+async def unlockall(ctx, *, razon: str = "Sin razón"):
+    """🔒 ADMIN — Desbloquea todos los canales."""
+    msg = await ctx.send("⏳ Desbloqueando todos los canales...")
+    count = 0
+    for c in ctx.guild.text_channels:
+        try:
+            ow = c.overwrites_for(ctx.guild.default_role)
+            ow.send_messages = None
+            await c.set_permissions(ctx.guild.default_role, overwrite=ow, reason=f"[UnlockAll] {ctx.author}")
+            count += 1
+        except Exception:
+            pass
+    embed = discord.Embed(title="🔓 Servidor Desbloqueado", description=f"**{count}** canales desbloqueados.\n📋 Razón: {razon}", color=discord.Color.green())
+    embed.set_footer(text=f"Por {ctx.author.display_name}")
+    await msg.edit(content=None, embed=embed)
+
+@bot.command(name="slowmode", aliases=["sm", "modo_lento"])
+@commands.check(es_admin)
+async def slowmode(ctx, segundos: int = 0, canal: discord.TextChannel = None):
+    """🔒 ADMIN — Modo lento. Uso: !slowmode [segundos] [#canal]"""
+    canal = canal or ctx.channel
+    if segundos < 0 or segundos > 21600:
+        return await ctx.send("❌ Valor entre 0 y 21600 segundos.")
+    await canal.edit(slowmode_delay=segundos)
+    if segundos == 0:
+        await ctx.send(f"✅ Modo lento **desactivado** en {canal.mention}.")
+    else:
+        await ctx.send(f"🐌 Modo lento en {canal.mention}: **{segundos}s** entre mensajes.")
+
+@bot.command(name="hide", aliases=["ocultar"])
+@commands.check(es_admin)
+async def hide(ctx, canal: discord.TextChannel = None):
+    """🔒 ADMIN — Oculta un canal. Uso: !hide [#canal]"""
+    canal = canal or ctx.channel
+    ow = canal.overwrites_for(ctx.guild.default_role)
+    ow.view_channel = False
+    await canal.set_permissions(ctx.guild.default_role, overwrite=ow)
+    await ctx.send(f"👁️ {canal.mention} ahora está **oculto**.")
+
+@bot.command(name="show", aliases=["mostrar"])
+@commands.check(es_admin)
+async def show(ctx, canal: discord.TextChannel = None):
+    """🔒 ADMIN — Muestra un canal oculto. Uso: !show [#canal]"""
+    canal = canal or ctx.channel
+    ow = canal.overwrites_for(ctx.guild.default_role)
+    ow.view_channel = None
+    await canal.set_permissions(ctx.guild.default_role, overwrite=ow)
+    await ctx.send(f"👁️ {canal.mention} ahora está **visible**.")
+
+@bot.command(name="topic", aliases=["tema"])
+@commands.check(es_admin)
+async def topic(ctx, *, texto: str):
+    """🔒 ADMIN — Cambia el tema del canal. Uso: !topic texto"""
+    await ctx.channel.edit(topic=texto)
+    await ctx.send(f"✅ Tema actualizado: **{texto}**")
+
+@bot.command(name="rename_canal", aliases=["rc"])
+@commands.check(es_admin)
+async def rename_canal(ctx, *, nombre: str):
+    """🔒 ADMIN — Renombra el canal actual. Uso: !rc nuevo-nombre"""
+    nombre = nombre.lower().replace(" ", "-")
+    viejo = ctx.channel.name
+    await ctx.channel.edit(name=nombre)
+    await ctx.send(f"✅ Canal: **#{viejo}** → **#{nombre}**")
+
+@bot.command(name="crear_canal", aliases=["cc"])
+@commands.check(es_admin)
+async def crear_canal(ctx, *, nombre: str):
+    """🔒 ADMIN — Crea un canal de texto. Uso: !cc nombre"""
+    nombre = nombre.lower().replace(" ", "-")
+    c = await ctx.guild.create_text_channel(nombre, reason=f"Creado por {ctx.author}")
+    await ctx.send(f"✅ Canal creado: {c.mention}")
+
+@bot.command(name="eliminar_canal", aliases=["ec"])
+@commands.check(es_admin)
+async def eliminar_canal(ctx, canal: discord.TextChannel = None):
+    """🔒 ADMIN — Elimina un canal. Uso: !ec [#canal]"""
+    canal = canal or ctx.channel
+    nombre = canal.name
+    await canal.delete(reason=f"Eliminado por {ctx.author}")
+    if canal != ctx.channel:
+        await ctx.send(f"🗑️ Canal **#{nombre}** eliminado.")
+
+@bot.command(name="clonar_canal", aliases=["clone"])
+@commands.check(es_admin)
+async def clonar_canal(ctx, canal: discord.TextChannel = None):
+    """🔒 ADMIN — Clona un canal. Uso: !clone [#canal]"""
+    canal = canal or ctx.channel
+    nuevo = await canal.clone(reason=f"Clonado por {ctx.author}")
+    await ctx.send(f"✅ Canal clonado: {nuevo.mention}")
+
+@bot.command(name="nsfw")
+@commands.check(es_admin)
+async def nsfw_toggle(ctx, canal: discord.TextChannel = None):
+    """🔒 ADMIN — Activa/desactiva NSFW. Uso: !nsfw [#canal]"""
+    canal = canal or ctx.channel
+    nuevo = not canal.is_nsfw()
+    await canal.edit(nsfw=nuevo)
+    estado = "activado 🔞" if nuevo else "desactivado ✅"
+    await ctx.send(f"NSFW **{estado}** en {canal.mention}.")
+
+@bot.command(name="slowmode_reset", aliases=["smr"])
+@commands.check(es_admin)
+async def slowmode_reset(ctx):
+    """🔒 ADMIN — Resetea el modo lento del canal actual."""
+    await ctx.channel.edit(slowmode_delay=0)
+    await ctx.send("✅ Modo lento **desactivado** en este canal.")
+
+# ═════════════════════════════════════════════════════════════
+#  🎭 GESTIÓN DE ROLES (Admin)
+# ═════════════════════════════════════════════════════════════
+
+@bot.command(name="dar_rol", aliases=["dr"])
+@commands.check(es_admin)
+async def dar_rol(ctx, member: discord.Member, *, nombre_rol: str):
+    """🔒 ADMIN — Da un rol. Uso: !dr @usuario Nombre Rol"""
+    rol = discord.utils.get(ctx.guild.roles, name=nombre_rol)
+    if not rol:
+        return await ctx.send(f"❌ No encontré el rol `{nombre_rol}`.")
+    if rol in member.roles:
+        return await ctx.send(f"⚠️ {member.mention} ya tiene **{rol.name}**.")
+    try:
+        await member.add_roles(rol, reason=f"Dado por {ctx.author}")
+        await ctx.send(f"✅ Rol **{rol.name}** dado a {member.mention}.")
+    except discord.Forbidden:
+        await ctx.send("❌ Sin permisos para dar ese rol.")
+
+@bot.command(name="quitar_rol", aliases=["qr"])
+@commands.check(es_admin)
+async def quitar_rol(ctx, member: discord.Member, *, nombre_rol: str):
+    """🔒 ADMIN — Quita un rol. Uso: !qr @usuario Nombre Rol"""
+    rol = discord.utils.get(ctx.guild.roles, name=nombre_rol)
+    if not rol:
+        return await ctx.send(f"❌ No encontré el rol `{nombre_rol}`.")
+    if rol not in member.roles:
+        return await ctx.send(f"⚠️ {member.mention} no tiene **{rol.name}**.")
+    try:
+        await member.remove_roles(rol, reason=f"Quitado por {ctx.author}")
+        await ctx.send(f"✅ Rol **{rol.name}** quitado a {member.mention}.")
+    except discord.Forbidden:
+        await ctx.send("❌ Sin permisos para quitar ese rol.")
+
+@bot.command(name="crear_rol", aliases=["cr"])
+@commands.check(es_admin)
+async def crear_rol(ctx, color: str = "#99AAB5", *, nombre: str):
+    """🔒 ADMIN — Crea un rol. Uso: !cr #FF0000 Nombre"""
+    try:
+        color_obj = discord.Color.from_str(color)
+    except Exception:
+        return await ctx.send("❌ Color inválido. Usa `#RRGGBB`.")
+    rol = await ctx.guild.create_role(name=nombre, color=color_obj, reason=f"Creado por {ctx.author}")
+    await ctx.send(f"✅ Rol {rol.mention} creado.")
+
+@bot.command(name="eliminar_rol", aliases=["er"])
+@commands.check(es_admin)
+async def eliminar_rol(ctx, *, nombre_rol: str):
+    """🔒 ADMIN — Elimina un rol. Uso: !er Nombre Rol"""
+    rol = discord.utils.get(ctx.guild.roles, name=nombre_rol)
+    if not rol:
+        return await ctx.send(f"❌ No encontré el rol `{nombre_rol}`.")
+    try:
+        await rol.delete(reason=f"Eliminado por {ctx.author}")
+        await ctx.send(f"🗑️ Rol **{nombre_rol}** eliminado.")
+    except discord.Forbidden:
+        await ctx.send("❌ Sin permisos para eliminar ese rol.")
+
+@bot.command(name="roles_usuario", aliases=["ru"])
+@commands.check(es_admin)
+async def roles_usuario(ctx, member: discord.Member = None):
+    """🔒 ADMIN — Lista roles de un usuario. Uso: !ru [@usuario]"""
+    member = member or ctx.author
+    roles = [r.mention for r in reversed(member.roles) if r != ctx.guild.default_role]
+    embed = discord.Embed(title=f"🎭 Roles de {member.display_name}", color=member.color)
+    embed.description = " ".join(roles) if roles else "Sin roles"
+    embed.set_thumbnail(url=member.display_avatar.url)
+    await ctx.send(embed=embed)
+
+@bot.command(name="anuncio", aliases=["ann"])
+@commands.check(es_admin)
+async def anuncio(ctx, canal: discord.TextChannel = None, *, mensaje: str):
+    """🔒 ADMIN — Envía un anuncio. Uso: !ann [#canal] mensaje"""
+    canal = canal or ctx.channel
+    embed = discord.Embed(title="📢 Anuncio", description=mensaje, color=discord.Color.gold(), timestamp=datetime.now(timezone.utc))
+    embed.set_footer(text=f"Por {ctx.author.display_name}")
+    await canal.send("@everyone", embed=embed)
+    if canal != ctx.channel:
+        await ctx.send(f"✅ Anuncio enviado en {canal.mention}.")
+
+@bot.command(name="embed_msg", aliases=["emb"])
+@commands.check(es_admin)
+async def embed_msg(ctx, canal: discord.TextChannel = None, titulo: str = "Mensaje", *, mensaje: str):
+    """🔒 ADMIN — Envía un embed. Uso: !emb [#canal] "Titulo" mensaje"""
+    canal = canal or ctx.channel
+    embed = discord.Embed(title=titulo, description=mensaje, color=discord.Color.blurple(), timestamp=datetime.now(timezone.utc))
+    embed.set_footer(text=f"Por {ctx.author.display_name}")
+    await canal.send(embed=embed)
+    if canal != ctx.channel:
+        await ctx.send(f"✅ Embed enviado en {canal.mention}.")
+
+
+ANTINUKE_FILE = "antinuke.json"
+
+ANTINUKE_DEFAULT = {
+    "activo": True,
+    "whitelist": [],          # IDs de usuarios de confianza (no se les aplica)
+    "owner_id": None,         # ID del propietario del servidor
+    "limites": {
+        "ban": 3,             # máx bans en ventana de tiempo
+        "kick": 3,
+        "roles": 3,
+        "canales": 3,
+        "webhooks": 3,
+    },
+    "ventana": 10,            # segundos para contar acciones
+    "accion": "ban",          # qué hacer con el nuke: ban | kick | quitar_roles
+    "log_channel": None,      # ID del canal de logs
+}
+
+def cargar_antinuke() -> dict:
+    if os.path.exists(ANTINUKE_FILE):
+        with open(ANTINUKE_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        # Asegurar que tenga todas las claves
+        for k, v in ANTINUKE_DEFAULT.items():
+            if k not in data:
+                data[k] = v
+        return data
+    return dict(ANTINUKE_DEFAULT)
+
+def guardar_antinuke(cfg: dict):
+    with open(ANTINUKE_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2, ensure_ascii=False)
+
+# Contadores de acciones por usuario { user_id: [(timestamp, accion), ...] }
+_acciones = defaultdict(list)
+
+def registrar_accion(user_id: int, tipo: str) -> int:
+    """Registra una acción y devuelve cuántas hizo en la ventana."""
+    cfg = cargar_antinuke()
+    ventana = cfg.get("ventana", 10)
+    ahora = time.time()
+    _acciones[user_id] = [
+        (t, a) for t, a in _acciones[user_id]
+        if ahora - t <= ventana
+    ]
+    _acciones[user_id].append((ahora, tipo))
+    return sum(1 for _, a in _acciones[user_id] if a == tipo)
+
+def es_seguro(user_id: int, guild: discord.Guild) -> bool:
+    """Retorna True si el usuario está en whitelist o es owner."""
+    cfg = cargar_antinuke()
+    if guild.owner_id == user_id:
+        return True
+    owner = cfg.get("owner_id")
+    if owner and user_id == int(owner):
+        return True
+    return user_id in [int(x) for x in cfg.get("whitelist", [])]
+
+async def ejecutar_castigo(guild: discord.Guild, member: discord.Member, razon: str):
+    cfg = cargar_antinuke()
+    accion = cfg.get("accion", "ban")
+    try:
+        if accion == "ban":
+            await guild.ban(member, reason=f"[AntiNuke] {razon}", delete_message_days=0)
+        elif accion == "kick":
+            await guild.kick(member, reason=f"[AntiNuke] {razon}")
+        elif accion == "quitar_roles":
+            roles = [r for r in member.roles if r != guild.default_role and not r.managed]
+            if roles:
+                await member.remove_roles(*roles, reason=f"[AntiNuke] {razon}")
+        log.warning(f"[AntiNuke] {accion.upper()} a {member} — {razon}")
+    except Exception as e:
+        log.error(f"[AntiNuke] No pude aplicar castigo a {member}: {e}")
+
+async def log_antinuke(guild: discord.Guild, titulo: str, desc: str, color=0xFF0000):
+    cfg = cargar_antinuke()
+    canal_id = cfg.get("log_channel")
+    if not canal_id:
+        return
+    canal = guild.get_channel(int(canal_id))
+    if canal:
+        embed = discord.Embed(title=f"🛡️ AntiNuke — {titulo}", description=desc, color=color, timestamp=datetime.now(timezone.utc))
+        try:
+            await canal.send(embed=embed)
+        except Exception:
+            pass
+
+def es_owner(ctx) -> bool:
+    cfg = cargar_antinuke()
+    owner = cfg.get("owner_id")
+    return (
+        ctx.author.id == ctx.guild.owner_id or
+        (owner and ctx.author.id == int(owner))
+    )
+
+def es_owner_o_admin(ctx) -> bool:
+    return es_owner(ctx) or ctx.author.guild_permissions.administrator
+
 # ─────────────────────────────────────────────────────────────
-#  PERMISOS
+#  EVENTOS ANTINUKE
 # ─────────────────────────────────────────────────────────────
+
+@bot.event
+async def on_member_ban(guild: discord.Guild, user: discord.User):
+    cfg = cargar_antinuke()
+    if not cfg.get("activo"):
+        return
+    try:
+        entry = await guild.audit_logs(limit=1, action=discord.AuditLogAction.ban).next()
+        autor = entry.user
+        if autor.bot or es_seguro(autor.id, guild):
+            return
+        count = registrar_accion(autor.id, "ban")
+        if count >= cfg["limites"]["ban"]:
+            member = guild.get_member(autor.id)
+            if member:
+                await ejecutar_castigo(guild, member, f"Ban masivo ({count} bans)")
+                await log_antinuke(guild, "Ban Masivo Detectado",
+                    f"**Usuario:** {autor.mention} (`{autor.id}`)\n**Bans:** {count}\n**Acción:** {cfg['accion']}")
+    except Exception as e:
+        log.error(f"[AntiNuke] on_member_ban error: {e}")
+
+@bot.event
+async def on_member_remove(member: discord.Member):
+    cfg = cargar_antinuke()
+    if not cfg.get("activo"):
+        return
+    try:
+        entry = await member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick).next()
+        autor = entry.user
+        if autor.bot or es_seguro(autor.id, member.guild):
+            return
+        if entry.target.id == member.id:
+            count = registrar_accion(autor.id, "kick")
+            if count >= cfg["limites"]["kick"]:
+                m = member.guild.get_member(autor.id)
+                if m:
+                    await ejecutar_castigo(member.guild, m, f"Kick masivo ({count} kicks)")
+                    await log_antinuke(member.guild, "Kick Masivo Detectado",
+                        f"**Usuario:** {autor.mention}\n**Kicks:** {count}\n**Acción:** {cfg['accion']}")
+    except Exception as e:
+        pass
+
+@bot.event
+async def on_guild_role_delete(role: discord.Role):
+    cfg = cargar_antinuke()
+    if not cfg.get("activo"):
+        return
+    try:
+        entry = await role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_delete).next()
+        autor = entry.user
+        if autor.bot or es_seguro(autor.id, role.guild):
+            return
+        count = registrar_accion(autor.id, "roles")
+        if count >= cfg["limites"]["roles"]:
+            m = role.guild.get_member(autor.id)
+            if m:
+                await ejecutar_castigo(role.guild, m, f"Borrado masivo de roles ({count})")
+                await log_antinuke(role.guild, "Borrado de Roles Detectado",
+                    f"**Usuario:** {autor.mention}\n**Roles borrados:** {count}\n**Acción:** {cfg['accion']}")
+    except Exception as e:
+        pass
+
+@bot.event
+async def on_guild_channel_delete(channel):
+    cfg = cargar_antinuke()
+    if not cfg.get("activo"):
+        return
+    try:
+        entry = await channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete).next()
+        autor = entry.user
+        if autor.bot or es_seguro(autor.id, channel.guild):
+            return
+        count = registrar_accion(autor.id, "canales")
+        if count >= cfg["limites"]["canales"]:
+            m = channel.guild.get_member(autor.id)
+            if m:
+                await ejecutar_castigo(channel.guild, m, f"Borrado masivo de canales ({count})")
+                await log_antinuke(channel.guild, "Borrado de Canales Detectado",
+                    f"**Usuario:** {autor.mention}\n**Canales borrados:** {count}\n**Acción:** {cfg['accion']}")
+    except Exception as e:
+        pass
+
+@bot.event
+async def on_webhooks_update(channel):
+    cfg = cargar_antinuke()
+    if not cfg.get("activo"):
+        return
+    try:
+        entry = await channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.webhook_create).next()
+        autor = entry.user
+        if autor.bot or es_seguro(autor.id, channel.guild):
+            return
+        count = registrar_accion(autor.id, "webhooks")
+        if count >= cfg["limites"]["webhooks"]:
+            m = channel.guild.get_member(autor.id)
+            if m:
+                await ejecutar_castigo(channel.guild, m, f"Creación masiva de webhooks ({count})")
+                await log_antinuke(channel.guild, "Webhooks Masivos Detectados",
+                    f"**Usuario:** {autor.mention}\n**Webhooks:** {count}\n**Acción:** {cfg['accion']}")
+    except Exception as e:
+        pass
+
+# ═════════════════════════════════════════════════════════════
+#  🛡️ COMANDOS ANTINUKE (solo Owner)
+# ═════════════════════════════════════════════════════════════
+
+@bot.command(name="antinuke")
+@commands.check(es_owner)
+async def antinuke_status(ctx):
+    """👑 OWNER — Ver estado del antinuke."""
+    cfg = cargar_antinuke()
+    estado = "✅ Activo" if cfg["activo"] else "❌ Desactivado"
+    wl = cfg.get("whitelist", [])
+    wl_txt = ", ".join(f"<@{uid}>" for uid in wl) if wl else "Nadie"
+    embed = discord.Embed(title="🛡️ AntiNuke — Estado", color=0x00FF88 if cfg["activo"] else 0xFF0000)
+    embed.add_field(name="Estado", value=estado, inline=True)
+    embed.add_field(name="Acción", value=cfg.get("accion", "ban").upper(), inline=True)
+    embed.add_field(name="Ventana", value=f"{cfg.get('ventana', 10)}s", inline=True)
+    limites = cfg.get("limites", {})
+    embed.add_field(name="Límites", value="\n".join(f"`{k}`: {v}" for k, v in limites.items()), inline=True)
+    embed.add_field(name="Whitelist", value=wl_txt, inline=False)
+    log_ch = cfg.get("log_channel")
+    embed.add_field(name="Canal de logs", value=f"<#{log_ch}>" if log_ch else "No configurado", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command(name="an_activar")
+@commands.check(es_owner)
+async def an_activar(ctx):
+    """👑 OWNER — Activa el antinuke."""
+    cfg = cargar_antinuke()
+    cfg["activo"] = True
+    guardar_antinuke(cfg)
+    await ctx.send("✅ AntiNuke **activado**.")
+
+@bot.command(name="an_desactivar")
+@commands.check(es_owner)
+async def an_desactivar(ctx):
+    """👑 OWNER — Desactiva el antinuke."""
+    cfg = cargar_antinuke()
+    cfg["activo"] = False
+    guardar_antinuke(cfg)
+    await ctx.send("⚠️ AntiNuke **desactivado**. El servidor queda sin protección.")
+
+@bot.command(name="an_whitelist")
+@commands.check(es_owner)
+async def an_whitelist(ctx, member: discord.Member):
+    """👑 OWNER — Añade/quita un usuario de la whitelist. Uso: !an_whitelist @user"""
+    cfg = cargar_antinuke()
+    wl = cfg.get("whitelist", [])
+    uid = str(member.id)
+    if uid in wl:
+        wl.remove(uid)
+        cfg["whitelist"] = wl
+        guardar_antinuke(cfg)
+        await ctx.send(f"🗑️ {member.mention} **quitado** de la whitelist.")
+    else:
+        wl.append(uid)
+        cfg["whitelist"] = wl
+        guardar_antinuke(cfg)
+        await ctx.send(f"✅ {member.mention} **añadido** a la whitelist.")
+
+@bot.command(name="an_accion")
+@commands.check(es_owner)
+async def an_accion(ctx, accion: str):
+    """👑 OWNER — Cambia la acción ante un nuke. Uso: !an_accion ban|kick|quitar_roles"""
+    accion = accion.lower()
+    if accion not in ("ban", "kick", "quitar_roles"):
+        return await ctx.send("❌ Opciones válidas: `ban`, `kick`, `quitar_roles`")
+    cfg = cargar_antinuke()
+    cfg["accion"] = accion
+    guardar_antinuke(cfg)
+    await ctx.send(f"✅ Acción cambiada a **{accion.upper()}**.")
+
+@bot.command(name="an_limite")
+@commands.check(es_owner)
+async def an_limite(ctx, tipo: str, cantidad: int):
+    """👑 OWNER — Cambia un límite. Uso: !an_limite ban 3"""
+    tipos = ["ban", "kick", "roles", "canales", "webhooks"]
+    if tipo not in tipos:
+        return await ctx.send(f"❌ Tipos válidos: {', '.join(f'`{t}`' for t in tipos)}")
+    if cantidad < 1 or cantidad > 20:
+        return await ctx.send("❌ El límite debe ser entre 1 y 20.")
+    cfg = cargar_antinuke()
+    cfg["limites"][tipo] = cantidad
+    guardar_antinuke(cfg)
+    await ctx.send(f"✅ Límite de `{tipo}` cambiado a **{cantidad}**.")
+
+@bot.command(name="an_logs")
+@commands.check(es_owner)
+async def an_logs(ctx, canal: discord.TextChannel = None):
+    """👑 OWNER — Configura el canal de logs. Uso: !an_logs #canal"""
+    cfg = cargar_antinuke()
+    if canal is None:
+        cfg["log_channel"] = None
+        guardar_antinuke(cfg)
+        return await ctx.send("🗑️ Canal de logs **eliminado**.")
+    cfg["log_channel"] = str(canal.id)
+    guardar_antinuke(cfg)
+    await ctx.send(f"✅ Canal de logs configurado en {canal.mention}.")
+
+@bot.command(name="an_owner")
+@commands.check(lambda ctx: ctx.author.id == ctx.guild.owner_id)
+async def an_owner(ctx, member: discord.Member):
+    """👑 Solo dueño del servidor — Asigna un owner del antinuke. Uso: !an_owner @user"""
+    cfg = cargar_antinuke()
+    cfg["owner_id"] = str(member.id)
+    guardar_antinuke(cfg)
+    await ctx.send(f"✅ {member.mention} es ahora el **owner del AntiNuke**.")
+
+# ═════════════════════════════════════════════════════════════
+#  🔒 COMANDOS SOLO ADMIN (moderación extra)
+# ═════════════════════════════════════════════════════════════
+
+@bot.command(name="ban")
+@commands.check(es_admin)
+async def ban_cmd(ctx, member: discord.Member, *, razon: str = "Sin razón"):
+    """🔒 ADMIN — Banea a un usuario. Uso: !ban @usuario [razón]"""
+    if member == ctx.author:
+        return await ctx.send("❌ No puedes banearte a ti mismo.")
+    if member.guild_permissions.administrator:
+        return await ctx.send("❌ No puedes banear a un administrador.")
+    await guild_ban_safe(ctx.guild, member, razon, ctx.author)
+    embed = discord.Embed(title="🔨 Usuario Baneado", color=discord.Color.red())
+    embed.add_field(name="👤 Usuario", value=f"{member} (`{member.id}`)", inline=True)
+    embed.add_field(name="📋 Razón", value=razon, inline=True)
+    embed.add_field(name="👮 Por", value=ctx.author.display_name, inline=True)
+    await ctx.send(embed=embed)
+
+async def guild_ban_safe(guild, member, razon, autor):
+    try:
+        await guild.ban(member, reason=f"[{autor}] {razon}", delete_message_days=0)
+    except discord.Forbidden:
+        pass
+
+@bot.command(name="kick")
+@commands.check(es_admin)
+async def kick_cmd(ctx, member: discord.Member, *, razon: str = "Sin razón"):
+    """🔒 ADMIN — Expulsa a un usuario. Uso: !kick @usuario [razón]"""
+    if member == ctx.author:
+        return await ctx.send("❌ No puedes kickearte a ti mismo.")
+    try:
+        await ctx.guild.kick(member, reason=f"[{ctx.author}] {razon}")
+    except discord.Forbidden:
+        return await ctx.send("❌ No tengo permisos para kickear a ese usuario.")
+    embed = discord.Embed(title="👢 Usuario Expulsado", color=discord.Color.orange())
+    embed.add_field(name="👤 Usuario", value=f"{member}", inline=True)
+    embed.add_field(name="📋 Razón", value=razon, inline=True)
+    embed.add_field(name="👮 Por", value=ctx.author.display_name, inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command(name="mute")
+@commands.check(es_admin)
+async def mute_cmd(ctx, member: discord.Member, minutos: int = 10, *, razon: str = "Sin razón"):
+    """🔒 ADMIN — Mutea a un usuario. Uso: !mute @usuario [minutos] [razón]"""
+    import datetime as dt
+    if minutos < 1 or minutos > 40320:
+        return await ctx.send("❌ Los minutos deben ser entre 1 y 40320 (28 días).")
+    try:
+        until = discord.utils.utcnow() + dt.timedelta(minutes=minutos)
+        await member.timeout(until, reason=f"[{ctx.author}] {razon}")
+    except discord.Forbidden:
+        return await ctx.send("❌ No tengo permisos para mutear a ese usuario.")
+    embed = discord.Embed(title="🔇 Usuario Muteado", color=discord.Color.dark_grey())
+    embed.add_field(name="👤 Usuario", value=member.mention, inline=True)
+    embed.add_field(name="⏰ Duración", value=f"{minutos} minutos", inline=True)
+    embed.add_field(name="📋 Razón", value=razon, inline=True)
+    embed.add_field(name="👮 Por", value=ctx.author.display_name, inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command(name="unmute")
+@commands.check(es_admin)
+async def unmute_cmd(ctx, member: discord.Member):
+    """🔒 ADMIN — Desmutea a un usuario. Uso: !unmute @usuario"""
+    try:
+        await member.timeout(None)
+    except discord.Forbidden:
+        return await ctx.send("❌ No tengo permisos para desmutear a ese usuario.")
+    await ctx.send(f"✅ {member.mention} ha sido **desmuteado**.")
+
+@bot.command(name="limpiar", aliases=["clear", "purge"])
+@commands.check(es_admin)
+async def limpiar(ctx, cantidad: int = 10):
+    """🔒 ADMIN — Borra mensajes. Uso: !limpiar [cantidad]"""
+    if cantidad < 1 or cantidad > 100:
+        return await ctx.send("❌ Debes indicar entre 1 y 100 mensajes.")
+    borrados = await ctx.channel.purge(limit=cantidad + 1)
+    msg = await ctx.send(f"🗑️ **{len(borrados)-1}** mensajes borrados.")
+    await asyncio.sleep(3)
+    await msg.delete()
+
+@bot.command(name="userinfo", aliases=["ui", "whois"])
+@commands.check(es_admin)
+async def userinfo(ctx, member: discord.Member = None):
+    """🔒 ADMIN — Info de un usuario. Uso: !userinfo [@usuario]"""
+    member = member or ctx.author
+    roles = [r.mention for r in member.roles if r != ctx.guild.default_role]
+    embed = discord.Embed(title=f"👤 Info de {member}", color=member.color)
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="🆔 ID", value=member.id, inline=True)
+    embed.add_field(name="📅 Cuenta creada", value=member.created_at.strftime("%d/%m/%Y"), inline=True)
+    embed.add_field(name="📥 Se unió", value=member.joined_at.strftime("%d/%m/%Y"), inline=True)
+    embed.add_field(name="🏆 Roles", value=" ".join(roles) if roles else "Sin roles", inline=False)
+    embed.add_field(name="🤖 Bot", value="Sí" if member.bot else "No", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command(name="serverinfo", aliases=["si", "servidor"])
+@commands.check(es_admin)
+async def serverinfo(ctx):
+    """🔒 ADMIN — Info del servidor."""
+    g = ctx.guild
+    embed = discord.Embed(title=f"🏠 {g.name}", color=discord.Color.blurple())
+    if g.icon:
+        embed.set_thumbnail(url=g.icon.url)
+    embed.add_field(name="🆔 ID", value=g.id, inline=True)
+    embed.add_field(name="👑 Dueño", value=g.owner.mention, inline=True)
+    embed.add_field(name="👥 Miembros", value=g.member_count, inline=True)
+    embed.add_field(name="💬 Canales", value=len(g.channels), inline=True)
+    embed.add_field(name="🎭 Roles", value=len(g.roles), inline=True)
+    embed.add_field(name="📅 Creado", value=g.created_at.strftime("%d/%m/%Y"), inline=True)
+    await ctx.send(embed=embed)
+
+
 def es_admin(ctx) -> bool:
     return ctx.author.guild_permissions.administrator
 
@@ -641,6 +1758,114 @@ async def ayuda(ctx):
         ),
         inline=False
     )
+    embed.add_field(
+        name="🎭 Roleplay",
+        value=(
+            f"`{p}casar @user` — Proponer matrimonio\n"
+            f"`{p}aceptar` / `{p}rechazar` — Responder propuesta\n"
+            f"`{p}divorcio` — Divorciarse\n"
+            f"`{p}pareja [@user]` — Ver pareja\n"
+            f"`{p}adoptar @user` — Adoptar a alguien\n"
+            f"`{p}familia [@user]` — Ver árbol familiar"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🔮 Horóscopo y Personalidad",
+        value=(
+            f"`{p}horoscopo <signo>` — Tu horóscopo del día\n"
+            f"`{p}personalidad [@user]` — Tipo de personalidad\n"
+            f"`{p}compatibilidad @user` — % de compatibilidad"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🃏 Juegos de Chat",
+        value=(
+            f"`{p}trivia` — Pregunta de trivia con reacciones\n"
+            f"`{p}adivina [máximo]` — Adivina el número (5 intentos)"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="💬 Frases de Personajes",
+        value=(
+            f"`{p}fp [personaje]` — Frase de Naruto, Goku, Luffy, Zoro, Eren, Levi, Light, Itachi\n"
+            f"`{p}pl` — Ver todos los personajes disponibles"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🎰 Minijuegos",
+        value=(
+            f"`{p}dado [lados]` — Tira un dado\n"
+            f"`{p}moneda` — Cara o sello\n"
+            f"`{p}ruleta op1 op2...` — Elige una opción random\n"
+            f"`{p}8ball <pregunta>` — La bola mágica\n"
+            f"`{p}piedra` — Piedra papel tijera"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🐱 Anime",
+        value=(
+            f"`{p}abrazar @user` `{p}pat @user` `{p}slap @user`\n"
+            f"`{p}kiss @user` `{p}poke @user` `{p}cuddle @user`\n"
+            f"`{p}bite @user` `{p}wave @user` `{p}dance @user` `{p}cry`"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="😂 Memes y Frases",
+        value=(
+            f"`{p}meme` — Meme random de Reddit\n"
+            f"`{p}chiste` — Chiste random\n"
+            f"`{p}frase` — Frase motivacional"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🔒 Canales (Admin)",
+        value=(
+            f"`{p}lock` / `{p}unlock` [#canal] — Bloquear/desbloquear\n"
+            f"`{p}lockall` / `{p}unlockall` — Todo el servidor\n"
+            f"`{p}hide` / `{p}show` [#canal] — Ocultar/mostrar\n"
+            f"`{p}slowmode [seg]` — Modo lento\n"
+            f"`{p}topic <texto>` — Cambiar tema\n"
+            f"`{p}rc <nombre>` — Renombrar canal\n"
+            f"`{p}cc <nombre>` — Crear canal\n"
+            f"`{p}ec [#canal]` — Eliminar canal\n"
+            f"`{p}clone [#canal]` — Clonar canal\n"
+            f"`{p}nsfw [#canal]` — Toggle NSFW"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🎭 Roles (Admin)",
+        value=(
+            f"`{p}dr @user <rol>` — Dar rol\n"
+            f"`{p}qr @user <rol>` — Quitar rol\n"
+            f"`{p}cr #color <nombre>` — Crear rol\n"
+            f"`{p}er <nombre>` — Eliminar rol\n"
+            f"`{p}ru [@user]` — Ver roles de usuario\n"
+            f"`{p}ann [#canal] <msg>` — Anuncio con @everyone\n"
+            f"`{p}emb [#canal] \"Titulo\" <msg>` — Enviar embed"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🔒 Moderación (Admin)",
+        value=(
+            f"`{p}ban @user [razón]` — Banear usuario\n"
+            f"`{p}kick @user [razón]` — Expulsar usuario\n"
+            f"`{p}mute @user [min] [razón]` — Mutear usuario\n"
+            f"`{p}unmute @user` — Desmutear usuario\n"
+            f"`{p}limpiar [cantidad]` — Borrar mensajes (máx 100)\n"
+            f"`{p}userinfo [@user]` — Info de usuario\n"
+            f"`{p}serverinfo` — Info del servidor"
+        ),
+        inline=False
+    )
     embed.set_footer(text="Wraith → Celestial | 900 puntos al máximo | 60 roles con gradiente")
     await ctx.send(embed=embed)
 
@@ -719,6 +1944,263 @@ async def on_command_error(ctx, error):
     else:
         log.error(f"Error en '{ctx.command}': {error}\n{traceback.format_exc()}")
         await ctx.send(f"⚠️ Error: `{error}`")
+
+
+# ═════════════════════════════════════════════════════════════
+#  🎰 JUEGOS
+# ═════════════════════════════════════════════════════════════
+
+@bot.command(name="dado", aliases=["dice", "d6"])
+async def dado(ctx, lados: int = 6):
+    """🎰 Tira un dado. Uso: !dado [lados]"""
+    if lados < 2 or lados > 100:
+        return await ctx.send("❌ El dado debe tener entre 2 y 100 lados.")
+    resultado = random.randint(1, lados)
+    embed = discord.Embed(title="🎲 Dado", color=discord.Color.blurple())
+    embed.add_field(name=f"D{lados}", value=f"**{resultado}**", inline=True)
+    embed.set_footer(text=f"Tirado por {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="moneda", aliases=["coin", "flip"])
+async def moneda(ctx):
+    """🎰 Tira una moneda."""
+    resultado = random.choice(["🪙 Cara", "🪙 Sello"])
+    embed = discord.Embed(title="🪙 Moneda", description=f"**{resultado}**", color=discord.Color.gold())
+    embed.set_footer(text=f"Lanzada por {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="ruleta", aliases=["roulette"])
+async def ruleta(ctx, *opciones):
+    """🎰 Elige una opción random. Uso: !ruleta op1 op2 op3"""
+    if len(opciones) < 2:
+        return await ctx.send("❌ Debes poner al menos 2 opciones. Ej: `!ruleta pizza hamburguesa sushi`")
+    elegida = random.choice(opciones)
+    embed = discord.Embed(title="🎡 Ruleta", color=discord.Color.red())
+    embed.add_field(name="Opciones", value=" | ".join(f"`{o}`" for o in opciones), inline=False)
+    embed.add_field(name="🏆 Elegida", value=f"**{elegida}**", inline=False)
+    embed.set_footer(text=f"Girada por {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="8ball", aliases=["bola8"])
+async def bola_ocho(ctx, *, pregunta: str):
+    """🎰 La bola mágica responde. Uso: !8ball ¿pregunta?"""
+    respuestas = [
+        "✅ Sí, definitivamente.", "✅ Todo indica que sí.", "✅ Sin duda.",
+        "✅ Puedes contar con ello.", "✅ Las señales dicen que sí.",
+        "🤔 Respuesta confusa, intenta de nuevo.", "🤔 No está claro ahora.",
+        "🤔 Mejor no te digo ahora.", "🤔 Concéntrate y pregunta de nuevo.",
+        "❌ No cuentes con ello.", "❌ Mi respuesta es no.", "❌ Las señales dicen que no.",
+        "❌ Muy dudoso.", "❌ Definitivamente no."
+    ]
+    embed = discord.Embed(title="🎱 Bola Mágica", color=discord.Color.dark_purple())
+    embed.add_field(name="❓ Pregunta", value=pregunta, inline=False)
+    embed.add_field(name="🔮 Respuesta", value=random.choice(respuestas), inline=False)
+    embed.set_footer(text=f"Preguntado por {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="piedra", aliases=["rps"])
+async def piedra_papel_tijera(ctx, eleccion: str):
+    """🎰 Piedra, papel o tijera. Uso: !piedra / !rps papel"""
+    opciones = ["piedra", "papel", "tijera"]
+    eleccion = eleccion.lower()
+    if eleccion not in opciones:
+        return await ctx.send("❌ Elige: `piedra`, `papel` o `tijera`")
+    bot_eleccion = random.choice(opciones)
+    emojis = {"piedra": "🪨", "papel": "📄", "tijera": "✂️"}
+    if eleccion == bot_eleccion:
+        resultado = "🤝 ¡Empate!"
+        color = discord.Color.yellow()
+    elif (eleccion == "piedra" and bot_eleccion == "tijera") or \
+         (eleccion == "papel" and bot_eleccion == "piedra") or \
+         (eleccion == "tijera" and bot_eleccion == "papel"):
+        resultado = "🏆 ¡Ganaste!"
+        color = discord.Color.green()
+    else:
+        resultado = "😈 ¡Perdiste!"
+        color = discord.Color.red()
+    embed = discord.Embed(title="🎮 Piedra Papel Tijera", description=resultado, color=color)
+    embed.add_field(name="Tu elección", value=emojis[eleccion], inline=True)
+    embed.add_field(name="Mi elección", value=emojis[bot_eleccion], inline=True)
+    await ctx.send(embed=embed)
+
+
+# ═════════════════════════════════════════════════════════════
+#  🐱 ANIME (hug, pat, slap, kiss, etc.)
+# ═════════════════════════════════════════════════════════════
+
+ANIME_ACCIONES = {
+    "abrazar":  {"emoji": "🤗", "gif_tag": "hug",   "msg": "{a} abraza a {b} 🤗"},
+    "pat":      {"emoji": "👋", "gif_tag": "pat",    "msg": "{a} le da palmaditas a {b} 👋"},
+    "slap":     {"emoji": "👋", "gif_tag": "slap",   "msg": "{a} le da una cachetada a {b} 😤"},
+    "kiss":     {"emoji": "💋", "gif_tag": "kiss",   "msg": "{a} le da un beso a {b} 💋"},
+    "cry":      {"emoji": "😢", "gif_tag": "cry",    "msg": "{a} está llorando 😢"},
+    "poke":     {"emoji": "👉", "gif_tag": "poke",   "msg": "{a} le da un toque a {b} 👉"},
+    "cuddle":   {"emoji": "🥰", "gif_tag": "cuddle", "msg": "{a} acurruca a {b} 🥰"},
+    "bite":     {"emoji": "😬", "gif_tag": "bite",   "msg": "{a} muerde a {b} 😬"},
+    "wave":     {"emoji": "👋", "gif_tag": "wave",   "msg": "{a} le saluda a {b} 👋"},
+    "dance":    {"emoji": "💃", "gif_tag": "dance",  "msg": "{a} baila con {b} 💃"},
+}
+
+async def obtener_gif_anime(tag: str) -> str:
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(f"https://nekos.best/api/v2/{tag}") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    return data["results"][0]["url"]
+    except Exception:
+        pass
+    return None
+
+def make_anime_cmd(accion: str, info: dict):
+    @bot.command(name=accion)
+    async def _cmd(ctx, member: discord.Member = None):
+        nombre_a = ctx.author.display_name
+        nombre_b = member.display_name if member else "todos"
+        msg = info["msg"].format(a=nombre_a, b=nombre_b)
+        gif = await obtener_gif_anime(info["gif_tag"])
+        embed = discord.Embed(description=msg, color=discord.Color.pink())
+        if gif:
+            embed.set_image(url=gif)
+        await ctx.send(embed=embed)
+    _cmd.__name__ = accion
+    return _cmd
+
+for _accion, _info in ANIME_ACCIONES.items():
+    make_anime_cmd(_accion, _info)
+
+
+# ═════════════════════════════════════════════════════════════
+#  😂 MEMES Y FRASES RANDOM
+# ═════════════════════════════════════════════════════════════
+
+FRASES_MOTIVACION = [
+    "El éxito no es definitivo, el fracaso no es fatal. — Churchill",
+    "Cree en ti mismo y todo lo demás vendrá solo.",
+    "Cada día es una nueva oportunidad para cambiar tu vida.",
+    "No cuentes los días, haz que los días cuenten. — Ali",
+    "El único modo de hacer un gran trabajo es amar lo que haces. — Jobs",
+    "La vida es 10% lo que te sucede y 90% cómo reaccionas. — Swindoll",
+    "Rodéate de personas que te empujen más alto. — Winfrey",
+    "El futuro pertenece a quienes creen en la belleza de sus sueños. — Roosevelt",
+    "No esperes oportunidades extraordinarias. Aprovecha las ordinarias.",
+    "Sé el cambio que quieres ver en el mundo. — Gandhi",
+]
+
+CHISTES = [
+    "¿Por qué los pájaros vuelan hacia el sur? Porque caminar es muy lejos 🐦",
+    "¿Qué le dijo el 0 al 8? Bonito cinturón 😂",
+    "¿Cómo se llama el campeón de buceo de Japón? Tokofondo 🤿",
+    "¿Por qué el libro de matemáticas estaba triste? Porque tenía muchos problemas 📚",
+    "¿Qué hace una abeja en el gimnasio? ¡Zum-ba! 🐝",
+    "¿Cómo llamas a un perro sin patas? No importa, no va a venir 🐶",
+    "¿Qué le dijo un techo a otro techo? Nada, los techos no hablan 🏠",
+    "¿Por qué los esqueletos no pelean entre sí? No tienen agallas 💀",
+]
+
+@bot.command(name="frase", aliases=["motivacion", "quote"])
+async def frase_random(ctx):
+    """😂 Frase motivacional random."""
+    embed = discord.Embed(
+        title="💬 Frase del día",
+        description=f"*{random.choice(FRASES_MOTIVACION)}*",
+        color=discord.Color.teal()
+    )
+    embed.set_footer(text=f"Para {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="chiste", aliases=["joke"])
+async def chiste_random(ctx):
+    """😂 Chiste random."""
+    embed = discord.Embed(
+        title="😂 Chiste",
+        description=random.choice(CHISTES),
+        color=discord.Color.yellow()
+    )
+    embed.set_footer(text=f"Para {ctx.author.display_name}")
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="meme")
+async def meme_random(ctx):
+    """😂 Meme random de Reddit."""
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get("https://meme-api.com/gimme") as resp:
+                if resp.status == 200:
+                    data = await resp.json()
+                    embed = discord.Embed(title=data["title"], color=discord.Color.orange())
+                    embed.set_image(url=data["url"])
+                    embed.set_footer(text=f"r/{data['subreddit']} | 👍 {data['ups']}")
+                    return await ctx.send(embed=embed)
+    except Exception:
+        pass
+    await ctx.send("❌ No pude obtener un meme ahora. Intenta más tarde.")
+
+
+# ═════════════════════════════════════════════════════════════
+#  🎁 SORTEOS Y ENCUESTAS
+# ═════════════════════════════════════════════════════════════
+
+sorteos_activos = {}
+
+@bot.command(name="sorteo", aliases=["giveaway"])
+@commands.check(es_staff)
+async def sorteo(ctx, segundos: int, *, premio: str):
+    """🎁 STAFF — Inicia un sorteo. Uso: !sorteo 60 Premio"""
+    if segundos < 10 or segundos > 86400:
+        return await ctx.send("❌ El tiempo debe ser entre 10 segundos y 24 horas.")
+    embed = discord.Embed(
+        title="🎁 ¡SORTEO!",
+        description=f"**Premio:** {premio}\n\nReacciona con 🎉 para participar!\n\n⏰ Termina en **{segundos}** segundos.",
+        color=discord.Color.gold()
+    )
+    embed.set_footer(text=f"Organizado por {ctx.author.display_name}")
+    msg = await ctx.send(embed=embed)
+    await msg.add_reaction("🎉")
+    sorteos_activos[msg.id] = {"premio": premio, "organizador": ctx.author.display_name}
+    await asyncio.sleep(segundos)
+    msg = await ctx.channel.fetch_message(msg.id)
+    reaction = discord.utils.get(msg.reactions, emoji="🎉")
+    participantes = []
+    async for user in reaction.users():
+        if not user.bot:
+            participantes.append(user)
+    if not participantes:
+        embed_fin = discord.Embed(title="🎁 Sorteo terminado", description="No hubo participantes 😢", color=discord.Color.red())
+    else:
+        ganador = random.choice(participantes)
+        embed_fin = discord.Embed(
+            title="🎉 ¡Tenemos ganador!",
+            description=f"**Premio:** {premio}\n\n🏆 Ganador: {ganador.mention} ¡Felicidades!",
+            color=discord.Color.gold()
+        )
+    await ctx.send(embed=embed_fin)
+    sorteos_activos.pop(msg.id, None)
+
+
+@bot.command(name="encuesta", aliases=["poll"])
+async def encuesta(ctx, *, texto: str):
+    """🎁 Crea una encuesta. Uso: !encuesta ¿Pregunta? | op1 | op2 | op3"""
+    partes = [p.strip() for p in texto.split("|")]
+    if len(partes) < 2:
+        return await ctx.send("❌ Formato: `!encuesta ¿Pregunta? | opción1 | opción2`")
+    pregunta = partes[0]
+    opciones = partes[1:]
+    if len(opciones) > 9:
+        return await ctx.send("❌ Máximo 9 opciones.")
+    numeros = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣"]
+    desc = "\n".join(f"{numeros[i]} {op}" for i, op in enumerate(opciones))
+    embed = discord.Embed(title=f"📊 {pregunta}", description=desc, color=discord.Color.blurple())
+    embed.set_footer(text=f"Encuesta de {ctx.author.display_name}")
+    msg = await ctx.send(embed=embed)
+    for i in range(len(opciones)):
+        await msg.add_reaction(numeros[i])
 
 
 # ─────────────────────────────────────────────────────────────
