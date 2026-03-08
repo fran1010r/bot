@@ -2037,17 +2037,25 @@ async def piedra_papel_tijera(ctx, eleccion: str):
 # ═════════════════════════════════════════════════════════════
 
 ANIME_ACCIONES = {
-    "abrazar":  {"emoji": "🤗", "gif_tag": "hug",   "msg": "{a} abraza a {b} 🤗"},
-    "pat":      {"emoji": "👋", "gif_tag": "pat",    "msg": "{a} le da palmaditas a {b} 👋"},
-    "slap":     {"emoji": "👋", "gif_tag": "slap",   "msg": "{a} le da una cachetada a {b} 😤"},
-    "kiss":     {"emoji": "💋", "gif_tag": "kiss",   "msg": "{a} le da un beso a {b} 💋"},
-    "cry":      {"emoji": "😢", "gif_tag": "cry",    "msg": "{a} está llorando 😢"},
-    "poke":     {"emoji": "👉", "gif_tag": "poke",   "msg": "{a} le da un toque a {b} 👉"},
-    "cuddle":   {"emoji": "🥰", "gif_tag": "cuddle", "msg": "{a} acurruca a {b} 🥰"},
-    "bite":     {"emoji": "😬", "gif_tag": "bite",   "msg": "{a} muerde a {b} 😬"},
-    "wave":     {"emoji": "👋", "gif_tag": "wave",   "msg": "{a} le saluda a {b} 👋"},
-    "dance":    {"emoji": "💃", "gif_tag": "dance",  "msg": "{a} baila con {b} 💃"},
+    "abrazar":  {"emoji": "🤗", "gif_tag": "hug",    "msg": "{a} abraza a {b} 🤗",               "boton": "Abrazar de vuelta 🤗"},
+    "pat":      {"emoji": "👋", "gif_tag": "pat",     "msg": "{a} le da palmaditas a {b} 👋",      "boton": "Dar palmaditas 👋"},
+    "slap":     {"emoji": "😤", "gif_tag": "slap",    "msg": "{a} le da una cachetada a {b} 😤",   "boton": "Devolver cachetada 😤"},
+    "kiss":     {"emoji": "💋", "gif_tag": "kiss",    "msg": "{a} le da un beso a {b} 💋",         "boton": "Besar de vuelta 💋"},
+    "cry":      {"emoji": "😢", "gif_tag": "cry",     "msg": "{a} está llorando 😢",               "boton": "Consolar 🫂"},
+    "poke":     {"emoji": "👉", "gif_tag": "poke",    "msg": "{a} le da un toque a {b} 👉",        "boton": "Devolver toque 👉"},
+    "cuddle":   {"emoji": "🥰", "gif_tag": "cuddle",  "msg": "{a} acurruca a {b} 🥰",              "boton": "Acurrucarse 🥰"},
+    "bite":     {"emoji": "😬", "gif_tag": "bite",    "msg": "{a} muerde a {b} 😬",               "boton": "Morder de vuelta 😬"},
+    "wave":     {"emoji": "👋", "gif_tag": "wave",    "msg": "{a} le saluda a {b} 👋",             "boton": "Saludar de vuelta 👋"},
+    "dance":    {"emoji": "💃", "gif_tag": "dance",   "msg": "{a} baila con {b} 💃",               "boton": "Bailar juntos 💃"},
 }
+
+# Contador de interacciones por pareja
+_contadores_anime = {}
+
+def get_contador(uid1: int, uid2: int, accion: str) -> int:
+    key = f"{min(uid1,uid2)}-{max(uid1,uid2)}-{accion}"
+    _contadores_anime[key] = _contadores_anime.get(key, 0) + 1
+    return _contadores_anime[key]
 
 async def obtener_gif_anime(tag: str) -> str:
     try:
@@ -2060,22 +2068,75 @@ async def obtener_gif_anime(tag: str) -> str:
         pass
     return None
 
+class AnimeView(discord.ui.View):
+    def __init__(self, autor: discord.Member, target: discord.Member, accion: str, info: dict):
+        super().__init__(timeout=60)
+        self.autor   = autor
+        self.target  = target
+        self.accion  = accion
+        self.info    = info
+
+        btn_responder = discord.ui.Button(
+            label=info["boton"],
+            style=discord.ButtonStyle.primary,
+            emoji=None
+        )
+        btn_rechazar = discord.ui.Button(
+            label="Rechazar ✖",
+            style=discord.ButtonStyle.danger
+        )
+
+        async def responder_cb(interaction: discord.Interaction):
+            if interaction.user.id != self.target.id:
+                return await interaction.response.send_message("❌ Este botón no es para ti.", ephemeral=True)
+            contador = get_contador(self.autor.id, self.target.id, self.accion)
+            gif = await obtener_gif_anime(self.info["gif_tag"])
+            msg_vuelta = self.info["msg"].format(a=self.target.display_name, b=self.autor.display_name)
+            embed = discord.Embed(description=msg_vuelta, color=discord.Color.pink())
+            embed.set_footer(text=f"{self.autor.display_name} y {self.target.display_name} se han {self.accion}ado {contador} veces.")
+            if gif:
+                embed.set_image(url=gif)
+            await interaction.response.send_message(embed=embed)
+            self.stop()
+
+        async def rechazar_cb(interaction: discord.Interaction):
+            if interaction.user.id != self.target.id:
+                return await interaction.response.send_message("❌ Este botón no es para ti.", ephemeral=True)
+            await interaction.response.send_message(
+                f"💔 **{self.target.display_name}** rechazó a **{self.autor.display_name}**."
+            )
+            self.stop()
+
+        btn_responder.callback = responder_cb
+        btn_rechazar.callback  = rechazar_cb
+        self.add_item(btn_responder)
+        self.add_item(btn_rechazar)
+
+
 def make_anime_cmd(accion: str, info: dict):
     @bot.command(name=accion)
     async def _cmd(ctx, member: discord.Member = None):
         nombre_a = ctx.author.display_name
         nombre_b = member.display_name if member else "todos"
+        contador = get_contador(ctx.author.id, member.id if member else 0, accion)
         msg = info["msg"].format(a=nombre_a, b=nombre_b)
         gif = await obtener_gif_anime(info["gif_tag"])
-        embed = discord.Embed(description=msg, color=discord.Color.pink())
+        embed = discord.Embed(description=f"**{msg}**", color=discord.Color.pink())
         if gif:
             embed.set_image(url=gif)
-        await ctx.send(embed=embed)
+            # Intentar sacar el anime del gif
+        if member and member != ctx.author:
+            embed.set_footer(text=f"{nombre_a} y {nombre_b} se han {accion}ado {contador} veces.")
+            view = AnimeView(ctx.author, member, accion, info)
+            await ctx.send(embed=embed, view=view)
+        else:
+            await ctx.send(embed=embed)
     _cmd.__name__ = accion
     return _cmd
 
 for _accion, _info in ANIME_ACCIONES.items():
     make_anime_cmd(_accion, _info)
+
 
 
 # ═════════════════════════════════════════════════════════════
