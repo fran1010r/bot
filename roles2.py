@@ -1870,6 +1870,44 @@ async def ayuda(ctx):
         ),
         inline=False
     )
+    embed.add_field(
+        name="🌐 Generales Extra",
+        value=(
+            f"`{p}ping` — Latencia del bot\n"
+            f"`{p}avatar [@user]` — Ver avatar\n"
+            f"`{p}banner [@user]` — Ver banner\n"
+            f"`{p}stats` — Estadísticas del servidor\n"
+            f"`{p}botinfo` — Info del bot\n"
+            f"`{p}calc <expr>` — Calculadora\n"
+            f"`{p}color <hex>` — Info de color\n"
+            f"`{p}clima <ciudad>` — Clima actual\n"
+            f"`{p}tr <idioma> <texto>` — Traducir texto\n"
+            f"`{p}dp [n] [lados]` — Dados múltiples\n"
+            f"`{p}sugerencia [#canal] <txt>` — Sugerencia\n"
+            f"`{p}reporte @user <razón>` — Reportar usuario\n"
+            f"`{p}invitar` — Link de invitación del bot"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="🎂 Cumpleaños",
+        value=(
+            f"`{p}cumple DD/MM` — Registrar tu cumpleaños\n"
+            f"`{p}cumple_ver [@user]` — Ver cumpleaños\n"
+            f"`{p}cumples_lista` — Próximos cumpleaños"
+        ),
+        inline=False
+    )
+    embed.add_field(
+        name="⏰ Recordatorios",
+        value=f"`{p}recordar <tiempo> <msg>` — Ej: `!recordar 10m Ir al gym` (s/m/h)",
+        inline=False
+    )
+    embed.add_field(
+        name="⚙️ Configuración (Owner/Admin)",
+        value=f"`{p}setprefix <nuevo>` — Cambiar prefijo del bot",
+        inline=False
+    )
     embed.set_footer(text="Wraith → Celestial | 900 puntos al máximo | 60 roles con gradiente")
     await ctx.send(embed=embed)
 
@@ -2266,6 +2304,382 @@ async def encuesta(ctx, *, texto: str):
     msg = await ctx.send(embed=embed)
     for i in range(len(opciones)):
         await msg.add_reaction(numeros[i])
+
+
+        await msg.add_reaction(numeros[i])
+
+
+# ═════════════════════════════════════════════════════════════
+#  ⚙️ CONFIGURACIÓN DEL BOT (Owner/Admin)
+# ═════════════════════════════════════════════════════════════
+
+BOTCONFIG_FILE = "botconfig.json"
+
+def cargar_botconfig() -> dict:
+    if os.path.exists(BOTCONFIG_FILE):
+        with open(BOTCONFIG_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {"prefix": PREFIX}
+
+def guardar_botconfig(cfg: dict):
+    with open(BOTCONFIG_FILE, "w", encoding="utf-8") as f:
+        json.dump(cfg, f, indent=2)
+
+@bot.command(name="setprefix", aliases=["prefix", "cambiar_prefijo"])
+@commands.check(es_owner_o_admin)
+async def setprefix(ctx, nuevo: str):
+    """👑 OWNER/ADMIN — Cambia el prefijo. Uso: !setprefix ?"""
+    if len(nuevo) > 3:
+        return await ctx.send("❌ El prefijo no puede tener más de 3 caracteres.")
+    cfg = cargar_botconfig()
+    viejo = bot.command_prefix
+    cfg["prefix"] = nuevo
+    guardar_botconfig(cfg)
+    bot.command_prefix = nuevo
+    await ctx.send(f"✅ Prefijo cambiado de `{viejo}` a `{nuevo}`")
+    log.info(f"Prefijo cambiado a '{nuevo}' por {ctx.author}")
+
+
+# ═════════════════════════════════════════════════════════════
+#  🌐 COMANDOS GENERALES EXTRA
+# ═════════════════════════════════════════════════════════════
+
+# ── Estadísticas ──────────────────────────────────────────────
+
+@bot.command(name="stats", aliases=["estadisticas", "estadísticas"])
+async def stats(ctx):
+    """🌐 Estadísticas del servidor."""
+    g = ctx.guild
+    total     = g.member_count
+    bots      = sum(1 for m in g.members if m.bot)
+    humanos   = total - bots
+    en_linea  = sum(1 for m in g.members if m.status != discord.Status.offline and not m.bot)
+    canales   = len(g.text_channels)
+    voz       = len(g.voice_channels)
+    roles     = len(g.roles)
+    emojis    = len(g.emojis)
+    embed = discord.Embed(title=f"📊 Estadísticas — {g.name}", color=discord.Color.blurple())
+    if g.icon:
+        embed.set_thumbnail(url=g.icon.url)
+    embed.add_field(name="👥 Total miembros", value=total,    inline=True)
+    embed.add_field(name="🧑 Humanos",        value=humanos,  inline=True)
+    embed.add_field(name="🤖 Bots",           value=bots,     inline=True)
+    embed.add_field(name="🟢 En línea",       value=en_linea, inline=True)
+    embed.add_field(name="💬 Canales texto",  value=canales,  inline=True)
+    embed.add_field(name="🔊 Canales voz",    value=voz,      inline=True)
+    embed.add_field(name="🎭 Roles",          value=roles,    inline=True)
+    embed.add_field(name="😄 Emojis",         value=emojis,   inline=True)
+    embed.add_field(name="📅 Creado",         value=g.created_at.strftime("%d/%m/%Y"), inline=True)
+    await ctx.send(embed=embed)
+
+
+@bot.command(name="botinfo", aliases=["bot_info", "info_bot"])
+async def botinfo(ctx):
+    """🌐 Info del bot."""
+    import platform
+    embed = discord.Embed(title="🤖 Info del Bot", color=discord.Color.blurple())
+    embed.set_thumbnail(url=bot.user.display_avatar.url)
+    embed.add_field(name="🏷️ Nombre",      value=str(bot.user),                   inline=True)
+    embed.add_field(name="🆔 ID",           value=bot.user.id,                     inline=True)
+    embed.add_field(name="🖥️ Python",       value=platform.python_version(),       inline=True)
+    embed.add_field(name="📚 discord.py",   value=discord.__version__,             inline=True)
+    embed.add_field(name="🏠 Servidores",   value=len(bot.guilds),                 inline=True)
+    embed.add_field(name="👥 Usuarios",     value=len(bot.users),                  inline=True)
+    embed.add_field(name="📜 Comandos",     value=len(bot.commands),               inline=True)
+    embed.add_field(name="⚙️ Prefijo",      value=f"`{bot.command_prefix}`",       inline=True)
+    await ctx.send(embed=embed)
+
+
+# ── Cumpleaños ────────────────────────────────────────────────
+
+CUMPLE_FILE = "cumpleanos.json"
+
+def cargar_cumples() -> dict:
+    if os.path.exists(CUMPLE_FILE):
+        with open(CUMPLE_FILE, "r", encoding="utf-8") as f:
+            return json.load(f)
+    return {}
+
+def guardar_cumples(data: dict):
+    with open(CUMPLE_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=2)
+
+@bot.command(name="cumple", aliases=["birthday", "nacimiento"])
+async def cumple(ctx, fecha: str = None):
+    """🎂 Registra tu cumpleaños. Uso: !cumple DD/MM"""
+    if fecha is None:
+        cumples = cargar_cumples()
+        uid = str(ctx.author.id)
+        if uid in cumples:
+            return await ctx.send(f"🎂 Tu cumpleaños registrado es el **{cumples[uid]}**. Usa `!cumple DD/MM` para cambiarlo.")
+        return await ctx.send("❌ No tienes cumpleaños registrado. Usa `!cumple DD/MM`.")
+    try:
+        dia, mes = fecha.split("/")
+        dia, mes = int(dia), int(mes)
+        if not (1 <= dia <= 31 and 1 <= mes <= 12):
+            raise ValueError
+    except Exception:
+        return await ctx.send("❌ Formato inválido. Usa `!cumple DD/MM`. Ej: `!cumple 25/12`")
+    cumples = cargar_cumples()
+    cumples[str(ctx.author.id)] = f"{dia:02d}/{mes:02d}"
+    guardar_cumples(cumples)
+    await ctx.send(f"🎂 Cumpleaños registrado: **{dia:02d}/{mes:02d}** ¡Anotado!")
+
+@bot.command(name="cumple_ver", aliases=["ver_cumple", "cumpleaños"])
+async def cumple_ver(ctx, member: discord.Member = None):
+    """🎂 Ver el cumpleaños de alguien. Uso: !cumple_ver [@usuario]"""
+    member = member or ctx.author
+    cumples = cargar_cumples()
+    uid = str(member.id)
+    if uid not in cumples:
+        return await ctx.send(f"❌ {member.display_name} no tiene cumpleaños registrado.")
+    fecha = cumples[uid]
+    dia, mes = map(int, fecha.split("/"))
+    hoy = datetime.now(timezone.utc)
+    este_anio = datetime(hoy.year, mes, dia, tzinfo=timezone.utc)
+    if este_anio < hoy:
+        este_anio = datetime(hoy.year + 1, mes, dia, tzinfo=timezone.utc)
+    dias_faltan = (este_anio - hoy).days
+    embed = discord.Embed(title=f"🎂 Cumpleaños de {member.display_name}", color=discord.Color.gold())
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="📅 Fecha", value=fecha, inline=True)
+    embed.add_field(name="⏰ Faltan", value=f"**{dias_faltan}** días", inline=True)
+    await ctx.send(embed=embed)
+
+@bot.command(name="cumples_lista", aliases=["lista_cumples"])
+async def cumples_lista(ctx):
+    """🎂 Ver todos los cumpleaños del servidor."""
+    cumples = cargar_cumples()
+    if not cumples:
+        return await ctx.send("❌ Nadie ha registrado su cumpleaños.")
+    hoy = datetime.now(timezone.utc)
+    lista = []
+    for uid, fecha in cumples.items():
+        try:
+            dia, mes = map(int, fecha.split("/"))
+            este = datetime(hoy.year, mes, dia, tzinfo=timezone.utc)
+            if este < hoy:
+                este = datetime(hoy.year + 1, mes, dia, tzinfo=timezone.utc)
+            dias = (este - hoy).days
+            lista.append((dias, uid, fecha))
+        except Exception:
+            pass
+    lista.sort()
+    embed = discord.Embed(title="🎂 Próximos Cumpleaños", color=discord.Color.gold())
+    for dias, uid, fecha in lista[:10]:
+        try:
+            member = ctx.guild.get_member(int(uid))
+            nombre = member.display_name if member else f"<@{uid}>"
+        except Exception:
+            nombre = f"<@{uid}>"
+        embed.add_field(name=f"🎉 {nombre}", value=f"**{fecha}** — en {dias} días", inline=False)
+    await ctx.send(embed=embed)
+
+
+# ── Recordatorios ─────────────────────────────────────────────
+
+@bot.command(name="recordar", aliases=["remind", "reminder"])
+async def recordar(ctx, tiempo: str, *, mensaje: str):
+    """⏰ Recordatorio personal. Uso: !recordar 10m Ir al gym
+    Unidades: s=segundos, m=minutos, h=horas"""
+    unidades = {"s": 1, "m": 60, "h": 3600}
+    try:
+        unidad = tiempo[-1].lower()
+        cantidad = int(tiempo[:-1])
+        if unidad not in unidades or cantidad < 1 or cantidad > 86400:
+            raise ValueError
+    except Exception:
+        return await ctx.send("❌ Formato inválido. Ej: `!recordar 10m Ir al gym` (s/m/h, máx 24h)")
+    segundos = cantidad * unidades[unidad]
+    nombres = {"s": "segundo(s)", "m": "minuto(s)", "h": "hora(s)"}
+    await ctx.send(f"⏰ Te recordaré en **{cantidad} {nombres[unidad]}**: *{mensaje}*")
+    await asyncio.sleep(segundos)
+    try:
+        embed = discord.Embed(
+            title="⏰ ¡Recordatorio!",
+            description=mensaje,
+            color=discord.Color.orange(),
+            timestamp=datetime.now(timezone.utc)
+        )
+        embed.set_footer(text=f"Solicitado por {ctx.author.display_name}")
+        await ctx.author.send(embed=embed)
+        await ctx.send(f"⏰ {ctx.author.mention} ¡Tu recordatorio! **{mensaje}**")
+    except Exception:
+        await ctx.send(f"⏰ {ctx.author.mention} ¡Tu recordatorio! **{mensaje}**")
+
+
+# ── Invitación y avatar ───────────────────────────────────────
+
+@bot.command(name="invitar", aliases=["invite", "invitacion"])
+async def invitar(ctx):
+    """🔗 Link de invitación del bot."""
+    url = f"https://discord.com/api/oauth2/authorize?client_id={bot.user.id}&permissions=8&scope=bot"
+    embed = discord.Embed(title="🔗 Invitar el Bot", description=f"[Haz click aquí para invitarme]({url})", color=discord.Color.blurple())
+    await ctx.send(embed=embed)
+
+@bot.command(name="avatar", aliases=["av", "foto"])
+async def avatar(ctx, member: discord.Member = None):
+    """🖼️ Ver el avatar de alguien. Uso: !avatar [@usuario]"""
+    member = member or ctx.author
+    embed = discord.Embed(title=f"🖼️ Avatar de {member.display_name}", color=member.color)
+    embed.set_image(url=member.display_avatar.url)
+    embed.add_field(name="🔗 Link", value=f"[Descargar]({member.display_avatar.url})", inline=False)
+    await ctx.send(embed=embed)
+
+@bot.command(name="banner")
+async def banner(ctx, member: discord.Member = None):
+    """🖼️ Ver el banner de alguien. Uso: !banner [@usuario]"""
+    member = member or ctx.author
+    user = await bot.fetch_user(member.id)
+    if not user.banner:
+        return await ctx.send(f"❌ {member.display_name} no tiene banner.")
+    embed = discord.Embed(title=f"🖼️ Banner de {member.display_name}", color=member.color)
+    embed.set_image(url=user.banner.url)
+    await ctx.send(embed=embed)
+
+@bot.command(name="ping")
+async def ping(ctx):
+    """🏓 Latencia del bot."""
+    latencia = round(bot.latency * 1000)
+    color = discord.Color.green() if latencia < 100 else discord.Color.yellow() if latencia < 200 else discord.Color.red()
+    embed = discord.Embed(title="🏓 Pong!", description=f"Latencia: **{latencia}ms**", color=color)
+    await ctx.send(embed=embed)
+
+@bot.command(name="clima", aliases=["weather", "tiempo"])
+async def clima(ctx, *, ciudad: str):
+    """🌤️ Clima de una ciudad. Uso: !clima Madrid"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"https://wttr.in/{ciudad.replace(' ', '+')}?format=j1"
+            async with session.get(url) as resp:
+                if resp.status != 200:
+                    return await ctx.send("❌ Ciudad no encontrada.")
+                data = await resp.json()
+                actual = data["current_condition"][0]
+                temp_c  = actual["temp_C"]
+                sensa   = actual["FeelsLikeC"]
+                humedad = actual["humidity"]
+                desc    = actual["weatherDesc"][0]["value"]
+                viento  = actual["windspeedKmph"]
+                embed = discord.Embed(title=f"🌤️ Clima en {ciudad.title()}", color=discord.Color.blue())
+                embed.add_field(name="🌡️ Temperatura", value=f"{temp_c}°C", inline=True)
+                embed.add_field(name="🤔 Sensación",   value=f"{sensa}°C",  inline=True)
+                embed.add_field(name="💧 Humedad",     value=f"{humedad}%", inline=True)
+                embed.add_field(name="💨 Viento",      value=f"{viento} km/h", inline=True)
+                embed.add_field(name="☁️ Descripción", value=desc,          inline=True)
+                embed.set_footer(text="Datos de wttr.in")
+                await ctx.send(embed=embed)
+    except Exception:
+        await ctx.send("❌ No pude obtener el clima. Intenta de nuevo.")
+
+@bot.command(name="traducir", aliases=["translate", "tr"])
+async def traducir(ctx, idioma: str, *, texto: str):
+    """🌍 Traduce texto. Uso: !tr en Hola mundo"""
+    try:
+        async with aiohttp.ClientSession() as session:
+            url = f"https://api.mymemory.translated.net/get?q={texto}&langpair=es|{idioma}"
+            async with session.get(url) as resp:
+                data = await resp.json()
+                traduccion = data["responseData"]["translatedText"]
+                embed = discord.Embed(title="🌍 Traducción", color=discord.Color.teal())
+                embed.add_field(name="📝 Original",    value=texto,       inline=False)
+                embed.add_field(name="✅ Traducido",   value=traduccion,  inline=False)
+                embed.add_field(name="🌐 Idioma",      value=idioma,      inline=True)
+                await ctx.send(embed=embed)
+    except Exception:
+        await ctx.send("❌ No pude traducir. Usa códigos como `en`, `pt`, `fr`, `de`, `ja`.")
+
+@bot.command(name="calcular", aliases=["calc", "matematica"])
+async def calcular(ctx, *, expresion: str):
+    """🧮 Calculadora. Uso: !calc 2+2*5"""
+    try:
+        permitidos = set("0123456789+-*/.() ")
+        if not all(c in permitidos for c in expresion):
+            return await ctx.send("❌ Solo se permiten números y operadores `+ - * / ( )`.")
+        resultado = eval(expresion)
+        embed = discord.Embed(title="🧮 Calculadora", color=discord.Color.green())
+        embed.add_field(name="📝 Expresión", value=f"`{expresion}`",  inline=False)
+        embed.add_field(name="✅ Resultado", value=f"**{resultado}**", inline=False)
+        await ctx.send(embed=embed)
+    except ZeroDivisionError:
+        await ctx.send("❌ No se puede dividir entre cero.")
+    except Exception:
+        await ctx.send("❌ Expresión inválida.")
+
+@bot.command(name="color")
+async def color_cmd(ctx, *, hex_color: str):
+    """🎨 Info de un color hex. Uso: !color #FF0000"""
+    hex_color = hex_color.strip("#")
+    try:
+        r = int(hex_color[0:2], 16)
+        g = int(hex_color[2:4], 16)
+        b = int(hex_color[4:6], 16)
+    except Exception:
+        return await ctx.send("❌ Color inválido. Usa formato hex: `!color FF0000`")
+    color_int = int(hex_color, 16)
+    embed = discord.Embed(title=f"🎨 Color #{hex_color.upper()}", color=color_int)
+    embed.add_field(name="🔴 R", value=r, inline=True)
+    embed.add_field(name="🟢 G", value=g, inline=True)
+    embed.add_field(name="🔵 B", value=b, inline=True)
+    embed.add_field(name="🔢 Decimal", value=color_int, inline=True)
+    embed.set_thumbnail(url=f"https://singlecolorimage.com/get/{hex_color}/100x100")
+    await ctx.send(embed=embed)
+
+@bot.command(name="sugerencia", aliases=["suggest"])
+async def sugerencia(ctx, canal: discord.TextChannel = None, *, texto: str):
+    """💡 Envía una sugerencia. Uso: !sugerencia [#canal] texto"""
+    canal = canal or ctx.channel
+    embed = discord.Embed(
+        title="💡 Nueva Sugerencia",
+        description=texto,
+        color=discord.Color.yellow(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.set_author(name=ctx.author.display_name, icon_url=ctx.author.display_avatar.url)
+    embed.set_footer(text=f"ID: {ctx.author.id}")
+    msg = await canal.send(embed=embed)
+    await msg.add_reaction("✅")
+    await msg.add_reaction("❌")
+    if canal != ctx.channel:
+        await ctx.send(f"✅ Sugerencia enviada en {canal.mention}.")
+
+@bot.command(name="reporte", aliases=["report"])
+async def reporte(ctx, member: discord.Member, *, razon: str):
+    """🚨 Reporta a un usuario. Uso: !reporte @usuario razón"""
+    if member == ctx.author:
+        return await ctx.send("❌ No puedes reportarte a ti mismo.")
+    embed = discord.Embed(
+        title="🚨 Nuevo Reporte",
+        color=discord.Color.red(),
+        timestamp=datetime.now(timezone.utc)
+    )
+    embed.add_field(name="👤 Reportado",  value=f"{member.mention} (`{member.id}`)", inline=False)
+    embed.add_field(name="📋 Razón",      value=razon,                               inline=False)
+    embed.add_field(name="📩 Reportado por", value=ctx.author.mention,               inline=False)
+    embed.add_field(name="📍 Canal",      value=ctx.channel.mention,                 inline=False)
+    # Buscar canal de logs del antinuke o enviar al canal actual
+    cfg = cargar_antinuke()
+    log_ch_id = cfg.get("log_channel")
+    canal_destino = ctx.guild.get_channel(int(log_ch_id)) if log_ch_id else ctx.channel
+    await canal_destino.send(embed=embed)
+    await ctx.message.delete()
+    await ctx.author.send(f"✅ Tu reporte sobre **{member.display_name}** fue enviado.")
+
+@bot.command(name="dado_personalizado", aliases=["dp"])
+async def dado_personalizado(ctx, cantidad: int = 1, lados: int = 6):
+    """🎲 Tira múltiples dados. Uso: !dp 3 6 (3 dados de 6 lados)"""
+    if cantidad < 1 or cantidad > 20:
+        return await ctx.send("❌ Entre 1 y 20 dados.")
+    if lados < 2 or lados > 1000:
+        return await ctx.send("❌ Entre 2 y 1000 lados.")
+    resultados = [random.randint(1, lados) for _ in range(cantidad)]
+    total = sum(resultados)
+    embed = discord.Embed(title=f"🎲 {cantidad}d{lados}", color=discord.Color.blurple())
+    embed.add_field(name="Resultados", value=" + ".join(f"`{r}`" for r in resultados), inline=False)
+    embed.add_field(name="Total", value=f"**{total}**", inline=True)
+    if cantidad > 1:
+        embed.add_field(name="Promedio", value=f"**{total/cantidad:.1f}**", inline=True)
+    await ctx.send(embed=embed)
 
 
 # ─────────────────────────────────────────────────────────────
