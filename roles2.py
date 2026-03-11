@@ -173,10 +173,23 @@ def es_owner_an(ctx) -> bool:
         or (owner and ctx.author.id == int(owner))
     )
 
-async def ejecutar_castigo(guild: discord.Guild, member: discord.Member, razon: str, accion: str = None):
+async def ejecutar_castigo(guild: discord.Guild, member, razon: str, accion: str = None):
     cfg = cargar_antinuke()
     if accion is None:
         accion = cfg.get("accion", "ban")
+    # Si member es solo un ID, intentar obtener el objeto
+    if isinstance(member, int):
+        try:
+            member = await guild.fetch_member(member)
+        except Exception:
+            try:
+                user = await bot.fetch_user(member)
+                if accion == "ban":
+                    await guild.ban(user, reason=f"[AntiNuke] {razon}", delete_message_days=0)
+                    log.warning(f"[AntiNuke] BAN (por ID) a {user} — {razon}")
+            except Exception as e:
+                log.error(f"[AntiNuke] No pude castigar ID {member}: {e}")
+            return
     try:
         if accion == "ban":
             await guild.ban(member, reason=f"[AntiNuke] {razon}", delete_message_days=0)
@@ -187,6 +200,8 @@ async def ejecutar_castigo(guild: discord.Guild, member: discord.Member, razon: 
             if roles:
                 await member.remove_roles(*roles, reason=f"[AntiNuke] {razon}")
         log.warning(f"[AntiNuke] {accion.upper()} a {member} — {razon}")
+    except discord.Forbidden:
+        log.error(f"[AntiNuke] Sin permisos para {accion} a {member}. ¿El rol del bot está arriba en la jerarquía?")
     except Exception as e:
         log.error(f"[AntiNuke] No pude aplicar castigo a {member}: {e}")
 
@@ -225,7 +240,7 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
             return
         count = registrar_accion(autor.id, "ban")
         if count >= cfg["limites"]["ban"]:
-            member = guild.get_member(autor.id)
+            member = guild.get_member(autor.id) or await guild.fetch_member(autor.id)
             if member:
                 await ejecutar_castigo(guild, member, f"Ban masivo ({count} bans)")
                 await log_antinuke(guild, "🔨 Ban Masivo Detectado",
@@ -249,7 +264,7 @@ async def on_member_remove(member: discord.Member):
         if entries[0].target.id == member.id:
             count = registrar_accion(autor.id, "kick")
             if count >= cfg["limites"]["kick"]:
-                m = member.guild.get_member(autor.id)
+                m = member.guild.get_member(autor.id) or await member.guild.fetch_member(autor.id)
                 if m:
                     await ejecutar_castigo(member.guild, m, f"Kick masivo ({count} kicks)")
                     await log_antinuke(member.guild, "👢 Kick Masivo Detectado",
@@ -272,7 +287,7 @@ async def on_guild_role_delete(role: discord.Role):
             return
         count = registrar_accion(autor.id, "roles")
         if count >= cfg["limites"]["roles"]:
-            m = role.guild.get_member(autor.id)
+            m = role.guild.get_member(autor.id) or await role.guild.fetch_member(autor.id)
             if m:
                 await ejecutar_castigo(role.guild, m, f"Borrado masivo de roles ({count})")
                 await log_antinuke(role.guild, "🗑️ Borrado de Roles Detectado",
@@ -295,7 +310,7 @@ async def on_guild_role_create(role: discord.Role):
             return
         count = registrar_accion(autor.id, "roles")
         if count >= cfg["limites"]["roles"]:
-            m = role.guild.get_member(autor.id)
+            m = role.guild.get_member(autor.id) or await role.guild.fetch_member(autor.id)
             if m:
                 await ejecutar_castigo(role.guild, m, f"Creación masiva de roles ({count})")
                 await log_antinuke(role.guild, "🆕 Creación Masiva de Roles",
@@ -322,7 +337,7 @@ async def on_guild_channel_delete(channel):
             return
         count = registrar_accion(autor.id, "canales")
         if count >= cfg["limites"]["canales"]:
-            m = channel.guild.get_member(autor.id)
+            m = channel.guild.get_member(autor.id) or await channel.guild.fetch_member(autor.id)
             if m:
                 await ejecutar_castigo(channel.guild, m, f"Borrado masivo de canales ({count})")
                 await log_antinuke(channel.guild, "🗑️ Borrado de Canales Detectado",
@@ -345,7 +360,7 @@ async def on_guild_channel_create(channel):
             return
         count = registrar_accion(autor.id, "canales")
         if count >= cfg["limites"]["canales"]:
-            m = channel.guild.get_member(autor.id)
+            m = channel.guild.get_member(autor.id) or await channel.guild.fetch_member(autor.id)
             if m:
                 await ejecutar_castigo(channel.guild, m, f"Creación masiva de canales ({count})")
                 await log_antinuke(channel.guild, "🆕 Creación Masiva de Canales",
@@ -368,7 +383,7 @@ async def on_webhooks_update(channel):
             return
         count = registrar_accion(autor.id, "webhooks")
         if count >= cfg["limites"]["webhooks"]:
-            m = channel.guild.get_member(autor.id)
+            m = channel.guild.get_member(autor.id) or await channel.guild.fetch_member(autor.id)
             if m:
                 await ejecutar_castigo(channel.guild, m, f"Creación masiva de webhooks ({count})")
                 await log_antinuke(channel.guild, "🕸️ Webhooks Masivos",
@@ -1633,15 +1648,29 @@ async def massnick(ctx, *, nuevo: str):
 #  🔒 COMANDO !v — DAR ROL ARN (Solo Admin)
 # ═════════════════════════════════════════════════════════════
 
-ROL_MEMBERS_ID = 1477556485092544532   # ID del rol Members
+# Roles por servidor — cada servidor usa el que le corresponde
+ROLES_V = {
+    # servidor_id : rol_id_a_dar
+    # Si el servidor no está en el dict, intenta con ambos IDs
+}
+ROL_MEMBERS_ID = 1477556485092544532   # ID del rol Members (servidor 1)
+ROL_ARN_ID     = 1473493514770972922   # ID del rol /arn     (servidor 2)
 
 @bot.command(name="v")
 @commands.check(es_admin)
 async def dar_rol_arn(ctx, member: discord.Member):
-    """🔒 ADMIN — Da Members y elimina todos los demás roles del usuario. !v @usuario"""
-    rol_members = ctx.guild.get_role(ROL_MEMBERS_ID)
-    if rol_members is None:
-        return await ctx.send("❌ No encontré el rol Members. Verifica el ID en el código.")
+    """🔒 ADMIN — Da Members o /arn (según el servidor) y elimina todos los demás roles. !v @usuario"""
+
+    # Detectar qué rol usar según el servidor actual
+    rol_dar = None
+    for rol_id in [ROL_MEMBERS_ID, ROL_ARN_ID]:
+        r = ctx.guild.get_role(rol_id)
+        if r is not None:
+            rol_dar = r
+            break
+
+    if rol_dar is None:
+        return await ctx.send("❌ No encontré el rol de acceso en este servidor. Verifica los IDs en el código.")
 
     # Quitar TODOS los roles que tenga el usuario (excepto @everyone y roles no gestionables)
     roles_a_quitar = [
@@ -1649,16 +1678,16 @@ async def dar_rol_arn(ctx, member: discord.Member):
         if r != ctx.guild.default_role
         and not r.managed
         and r < ctx.guild.me.top_role
+        and r.id != rol_dar.id  # no quitar el que vamos a dar
     ]
     roles_quitados = []
     roles_fallidos = []
 
     if roles_a_quitar:
         try:
-            await member.remove_roles(*roles_a_quitar, reason=f"!v — limpieza de roles por {ctx.author}")
+            await member.remove_roles(*roles_a_quitar, reason=f"!v — limpieza por {ctx.author}")
             roles_quitados = roles_a_quitar
         except discord.Forbidden:
-            # Si falla en bloque, intentar uno a uno
             for r in roles_a_quitar:
                 try:
                     await member.remove_roles(r, reason=f"!v — {ctx.author}")
@@ -1666,17 +1695,17 @@ async def dar_rol_arn(ctx, member: discord.Member):
                 except discord.Forbidden:
                     roles_fallidos.append(r)
 
-    # Dar el rol Members
+    # Dar el rol
     try:
-        await member.add_roles(rol_members, reason=f"!v — acceso dado por {ctx.author}")
+        await member.add_roles(rol_dar, reason=f"!v — acceso dado por {ctx.author}")
     except discord.Forbidden:
-        return await ctx.send("❌ No pude asignar Members. Sube el rol del bot en la jerarquía.")
+        return await ctx.send(f"❌ No pude asignar **{rol_dar.name}**. Sube el rol del bot en la jerarquía.")
 
     embed = discord.Embed(title="✅ Acceso Concedido", color=discord.Color.green())
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="👤 Miembro",      value=member.mention,              inline=True)
-    embed.add_field(name="✅ Rol dado",     value=f"**{rol_members.name}**",   inline=True)
-    embed.add_field(name="✍️ Por",           value=ctx.author.mention,          inline=True)
+    embed.add_field(name="👤 Miembro",   value=member.mention,        inline=True)
+    embed.add_field(name="✅ Rol dado",  value=f"**{rol_dar.name}**", inline=True)
+    embed.add_field(name="✍️ Por",        value=ctx.author.mention,    inline=True)
 
     if roles_quitados:
         nombres = ", ".join(f"`{r.name}`" for r in roles_quitados)
