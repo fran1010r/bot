@@ -91,9 +91,7 @@ ANTINUKE_DEFAULT = {
         "roles": 3,
         "canales": 3,
         "webhooks": 3,
-        "menciones": 8,
-        "emojis": 5,
-        "perms": 2,
+
     },
     "ventana": 10,
     "accion": "ban",
@@ -295,28 +293,7 @@ async def on_guild_role_create(role: discord.Role):
 
 @bot.event
 async def on_guild_role_update(before: discord.Role, after: discord.Role):
-    cfg = cargar_antinuke()
-    if not cfg.get("activo"):
-        return
-    # Detectar si se añadieron permisos peligrosos
-    peligrosos = discord.Permissions(administrator=True, ban_members=True, kick_members=True, manage_guild=True, manage_roles=True)
-    nuevos = discord.Permissions(after.permissions.value & ~before.permissions.value)
-    if not any(getattr(nuevos, p) for p in ["administrator", "ban_members", "kick_members", "manage_guild", "manage_roles"]):
-        return
-    try:
-        entry = await after.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_update).next()
-        autor = entry.user
-        if autor.bot or es_seguro(autor.id, after.guild):
-            return
-        count = registrar_accion(autor.id, "perms")
-        if count >= cfg["limites"]["perms"]:
-            m = after.guild.get_member(autor.id)
-            if m:
-                await ejecutar_castigo(after.guild, m, f"Elevación de permisos masiva ({count})")
-                await log_antinuke(after.guild, "⚠️ Elevación de Permisos",
-                    f"**Usuario:** {autor.mention}\n**Rol modificado:** `{after.name}`\n**Acción:** `{cfg['accion']}`")
-    except Exception:
-        pass
+    pass  # Reservado para uso futuro
 
 @bot.event
 async def on_guild_channel_delete(channel):
@@ -474,20 +451,6 @@ async def on_message(message: discord.Message):
                     f"**Usuario:** {message.author.mention}\n**Canal:** {message.channel.mention}", color=0xFF8800)
             except Exception:
                 pass
-
-    # ── AntiMenciones ──
-    if cfg.get("activo") and len(message.mentions) >= cfg["limites"].get("menciones", 8):
-        if not es_seguro(message.author.id, message.guild):
-            try:
-                await message.delete()
-                import datetime as dt
-                until = discord.utils.utcnow() + dt.timedelta(minutes=10)
-                await message.author.timeout(until, reason="[AntiNuke] Mention spam")
-                await log_antinuke(message.guild, "📣 Mention Spam",
-                    f"**Usuario:** {message.author.mention}\n**Menciones:** {len(message.mentions)}", color=0xFF4400)
-            except Exception:
-                pass
-            return
 
     await bot.process_commands(message)
 
@@ -653,8 +616,8 @@ async def an_limite(ctx, tipo: str, cantidad: int):
     tipos = list(ANTINUKE_DEFAULT["limites"].keys())
     if tipo not in tipos:
         return await ctx.send(f"❌ Tipos: {', '.join(f'`{t}`' for t in tipos)}")
-    if not 1 <= cantidad <= 20:
-        return await ctx.send("❌ Entre 1 y 20.")
+    if not 0 <= cantidad <= 20:
+        return await ctx.send("❌ Entre 0 y 20.")
     cfg = cargar_antinuke(); cfg["limites"][tipo] = cantidad; guardar_antinuke(cfg)
     await ctx.send(f"✅ Límite `{tipo}` → **{cantidad}**.")
 
