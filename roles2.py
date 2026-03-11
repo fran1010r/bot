@@ -215,9 +215,12 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
     cfg = cargar_antinuke()
     if not cfg.get("activo"):
         return
+    await asyncio.sleep(0.5)
     try:
-        entry = await guild.audit_logs(limit=1, action=discord.AuditLogAction.ban).next()
-        autor = entry.user
+        entries = [e async for e in guild.audit_logs(limit=5, action=discord.AuditLogAction.ban)]
+        if not entries:
+            return
+        autor = entries[0].user
         if autor.bot or es_seguro(autor.id, guild):
             return
         count = registrar_accion(autor.id, "ban")
@@ -235,12 +238,15 @@ async def on_member_remove(member: discord.Member):
     cfg = cargar_antinuke()
     if not cfg.get("activo"):
         return
+    await asyncio.sleep(0.5)
     try:
-        entry = await member.guild.audit_logs(limit=1, action=discord.AuditLogAction.kick).next()
-        autor = entry.user
+        entries = [e async for e in member.guild.audit_logs(limit=5, action=discord.AuditLogAction.kick)]
+        if not entries:
+            return
+        autor = entries[0].user
         if autor.bot or es_seguro(autor.id, member.guild):
             return
-        if entry.target.id == member.id:
+        if entries[0].target.id == member.id:
             count = registrar_accion(autor.id, "kick")
             if count >= cfg["limites"]["kick"]:
                 m = member.guild.get_member(autor.id)
@@ -248,17 +254,20 @@ async def on_member_remove(member: discord.Member):
                     await ejecutar_castigo(member.guild, m, f"Kick masivo ({count} kicks)")
                     await log_antinuke(member.guild, "👢 Kick Masivo Detectado",
                         f"**Usuario:** {autor.mention}\n**Kicks en ventana:** {count}\n**Acción:** `{cfg['accion']}`")
-    except Exception:
-        pass
+    except Exception as e:
+        log.error(f"[AntiNuke] on_member_remove: {e}")
 
 @bot.event
 async def on_guild_role_delete(role: discord.Role):
     cfg = cargar_antinuke()
     if not cfg.get("activo"):
         return
+    await asyncio.sleep(0.5)  # Esperar que el audit log se registre
     try:
-        entry = await role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_delete).next()
-        autor = entry.user
+        entries = [e async for e in role.guild.audit_logs(limit=5, action=discord.AuditLogAction.role_delete)]
+        if not entries:
+            return
+        autor = entries[0].user
         if autor.bot or es_seguro(autor.id, role.guild):
             return
         count = registrar_accion(autor.id, "roles")
@@ -268,17 +277,20 @@ async def on_guild_role_delete(role: discord.Role):
                 await ejecutar_castigo(role.guild, m, f"Borrado masivo de roles ({count})")
                 await log_antinuke(role.guild, "🗑️ Borrado de Roles Detectado",
                     f"**Usuario:** {autor.mention}\n**Roles borrados:** {count}\n**Acción:** `{cfg['accion']}`")
-    except Exception:
-        pass
+    except Exception as e:
+        log.error(f"[AntiNuke] on_guild_role_delete: {e}")
 
 @bot.event
 async def on_guild_role_create(role: discord.Role):
     cfg = cargar_antinuke()
     if not cfg.get("activo"):
         return
+    await asyncio.sleep(0.5)
     try:
-        entry = await role.guild.audit_logs(limit=1, action=discord.AuditLogAction.role_create).next()
-        autor = entry.user
+        entries = [e async for e in role.guild.audit_logs(limit=5, action=discord.AuditLogAction.role_create)]
+        if not entries:
+            return
+        autor = entries[0].user
         if autor.bot or es_seguro(autor.id, role.guild):
             return
         count = registrar_accion(autor.id, "roles")
@@ -288,8 +300,8 @@ async def on_guild_role_create(role: discord.Role):
                 await ejecutar_castigo(role.guild, m, f"Creación masiva de roles ({count})")
                 await log_antinuke(role.guild, "🆕 Creación Masiva de Roles",
                     f"**Usuario:** {autor.mention}\n**Roles creados:** {count}\n**Acción:** `{cfg['accion']}`")
-    except Exception:
-        pass
+    except Exception as e:
+        log.error(f"[AntiNuke] on_guild_role_create: {e}")
 
 @bot.event
 async def on_guild_role_update(before: discord.Role, after: discord.Role):
@@ -300,9 +312,12 @@ async def on_guild_channel_delete(channel):
     cfg = cargar_antinuke()
     if not cfg.get("activo"):
         return
+    await asyncio.sleep(0.5)
     try:
-        entry = await channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_delete).next()
-        autor = entry.user
+        entries = [e async for e in channel.guild.audit_logs(limit=5, action=discord.AuditLogAction.channel_delete)]
+        if not entries:
+            return
+        autor = entries[0].user
         if autor.bot or es_seguro(autor.id, channel.guild):
             return
         count = registrar_accion(autor.id, "canales")
@@ -312,17 +327,20 @@ async def on_guild_channel_delete(channel):
                 await ejecutar_castigo(channel.guild, m, f"Borrado masivo de canales ({count})")
                 await log_antinuke(channel.guild, "🗑️ Borrado de Canales Detectado",
                     f"**Usuario:** {autor.mention}\n**Canales borrados:** {count}\n**Acción:** `{cfg['accion']}`")
-    except Exception:
-        pass
+    except Exception as e:
+        log.error(f"[AntiNuke] on_guild_channel_delete: {e}")
 
 @bot.event
 async def on_guild_channel_create(channel):
     cfg = cargar_antinuke()
     if not cfg.get("activo"):
         return
+    await asyncio.sleep(0.5)
     try:
-        entry = await channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.channel_create).next()
-        autor = entry.user
+        entries = [e async for e in channel.guild.audit_logs(limit=5, action=discord.AuditLogAction.channel_create)]
+        if not entries:
+            return
+        autor = entries[0].user
         if autor.bot or es_seguro(autor.id, channel.guild):
             return
         count = registrar_accion(autor.id, "canales")
@@ -332,17 +350,20 @@ async def on_guild_channel_create(channel):
                 await ejecutar_castigo(channel.guild, m, f"Creación masiva de canales ({count})")
                 await log_antinuke(channel.guild, "🆕 Creación Masiva de Canales",
                     f"**Usuario:** {autor.mention}\n**Canales creados:** {count}\n**Acción:** `{cfg['accion']}`")
-    except Exception:
-        pass
+    except Exception as e:
+        log.error(f"[AntiNuke] on_guild_channel_create: {e}")
 
 @bot.event
 async def on_webhooks_update(channel):
     cfg = cargar_antinuke()
     if not cfg.get("activo"):
         return
+    await asyncio.sleep(0.5)
     try:
-        entry = await channel.guild.audit_logs(limit=1, action=discord.AuditLogAction.webhook_create).next()
-        autor = entry.user
+        entries = [e async for e in channel.guild.audit_logs(limit=5, action=discord.AuditLogAction.webhook_create)]
+        if not entries:
+            return
+        autor = entries[0].user
         if autor.bot or es_seguro(autor.id, channel.guild):
             return
         count = registrar_accion(autor.id, "webhooks")
@@ -352,8 +373,8 @@ async def on_webhooks_update(channel):
                 await ejecutar_castigo(channel.guild, m, f"Creación masiva de webhooks ({count})")
                 await log_antinuke(channel.guild, "🕸️ Webhooks Masivos",
                     f"**Usuario:** {autor.mention}\n**Webhooks:** {count}\n**Acción:** `{cfg['accion']}`")
-    except Exception:
-        pass
+    except Exception as e:
+        log.error(f"[AntiNuke] on_webhooks_update: {e}")
 
 @bot.event
 async def on_member_join(member: discord.Member):
