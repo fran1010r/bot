@@ -1612,7 +1612,7 @@ async def massnick(ctx, *, nuevo: str):
 #  🔒 COMANDO !v — DAR ROL ARN (Solo Admin)
 # ═════════════════════════════════════════════════════════════
 
-ROL_MEMBERS_ID = 1481083325157474416   # ID del rol Members
+ROL_MEMBERS_ID = 1477556485092544532   # ID del rol Members
 
 @bot.command(name="v")
 @commands.check(es_admin)
