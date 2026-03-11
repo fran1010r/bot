@@ -1649,35 +1649,62 @@ async def massnick(ctx, *, nuevo: str):
 #  🔒 COMANDO !v — DAR ROL ARN (Solo Admin)
 # ═════════════════════════════════════════════════════════════
 
-ROL_ARN_ID        = 1473493514770972922
-ROL_SIN_ACCESO_ID = 1479630235283624049
+ROL_MEMBERS_ID = 1481083325157474416   # ID del rol Members
 
 @bot.command(name="v")
 @commands.check(es_admin)
 async def dar_rol_arn(ctx, member: discord.Member):
-    """🔒 ADMIN — Da /arn y quita sin acceso. !v @usuario"""
-    rol_arn        = ctx.guild.get_role(ROL_ARN_ID)
-    rol_sin_acceso = ctx.guild.get_role(ROL_SIN_ACCESO_ID)
-    if rol_arn is None:
-        return await ctx.send("❌ No encontré el rol /arn. Verifica el ID.")
-    if rol_sin_acceso and rol_sin_acceso in member.roles:
+    """🔒 ADMIN — Da Members y elimina todos los demás roles del usuario. !v @usuario"""
+    rol_members = ctx.guild.get_role(ROL_MEMBERS_ID)
+    if rol_members is None:
+        return await ctx.send("❌ No encontré el rol Members. Verifica el ID en el código.")
+
+    # Quitar TODOS los roles que tenga el usuario (excepto @everyone y roles no gestionables)
+    roles_a_quitar = [
+        r for r in member.roles
+        if r != ctx.guild.default_role
+        and not r.managed
+        and r < ctx.guild.me.top_role
+    ]
+    roles_quitados = []
+    roles_fallidos = []
+
+    if roles_a_quitar:
         try:
-            await member.remove_roles(rol_sin_acceso, reason=f"!v — {ctx.author}")
+            await member.remove_roles(*roles_a_quitar, reason=f"!v — limpieza de roles por {ctx.author}")
+            roles_quitados = roles_a_quitar
         except discord.Forbidden:
-            await ctx.send("⚠️ No pude quitar sin acceso (jerarquía).")
-    if rol_arn in member.roles:
-        return await ctx.send(f"⚠️ {member.mention} ya tiene **{rol_arn.name}**.")
+            # Si falla en bloque, intentar uno a uno
+            for r in roles_a_quitar:
+                try:
+                    await member.remove_roles(r, reason=f"!v — {ctx.author}")
+                    roles_quitados.append(r)
+                except discord.Forbidden:
+                    roles_fallidos.append(r)
+
+    # Dar el rol Members
     try:
-        await member.add_roles(rol_arn, reason=f"!v — {ctx.author}")
+        await member.add_roles(rol_members, reason=f"!v — acceso dado por {ctx.author}")
     except discord.Forbidden:
-        return await ctx.send("❌ No pude asignar /arn. Sube el rol del bot en jerarquía.")
+        return await ctx.send("❌ No pude asignar Members. Sube el rol del bot en la jerarquía.")
+
     embed = discord.Embed(title="✅ Acceso Concedido", color=discord.Color.green())
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="👤 Miembro",     value=member.mention,        inline=True)
-    embed.add_field(name="✅ Rol dado",    value=f"**{rol_arn.name}**", inline=True)
-    embed.add_field(name="✍️ Por",          value=ctx.author.mention,    inline=True)
+    embed.add_field(name="👤 Miembro",      value=member.mention,              inline=True)
+    embed.add_field(name="✅ Rol dado",     value=f"**{rol_members.name}**",   inline=True)
+    embed.add_field(name="✍️ Por",           value=ctx.author.mention,          inline=True)
+
+    if roles_quitados:
+        nombres = ", ".join(f"`{r.name}`" for r in roles_quitados)
+        embed.add_field(name=f"🗑️ Roles eliminados ({len(roles_quitados)})", value=nombres, inline=False)
+    if roles_fallidos:
+        nombres_f = ", ".join(f"`{r.name}`" for r in roles_fallidos)
+        embed.add_field(name="⚠️ No se pudieron quitar", value=nombres_f, inline=False)
+
+    embed.set_footer(text="Este mensaje se eliminará en 15 segundos")
     msg = await ctx.send(embed=embed)
-    await asyncio.sleep(10); await msg.delete()
+    await asyncio.sleep(15)
+    await msg.delete()
 
 @dar_rol_arn.error
 async def dar_rol_arn_error(ctx, error):
