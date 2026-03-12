@@ -239,12 +239,33 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
         if autor.bot or es_seguro(autor.id, guild):
             return
         count = registrar_accion(autor.id, "ban")
-        if count >= cfg["limites"]["ban"]:
-            member = guild.get_member(autor.id) or await guild.fetch_member(autor.id)
-            if member:
-                await ejecutar_castigo(guild, member, f"Ban masivo ({count} bans)")
-                await log_antinuke(guild, "🔨 Ban Masivo Detectado",
-                    f"**Usuario:** {autor.mention} (`{autor.id}`)\n**Bans en ventana:** {count}\n**Acción:** `{cfg['accion']}`")
+
+        # ── Desbanear a la víctima inmediatamente ──
+        try:
+            await guild.unban(user, reason=f"[AntiNuke] Ban no autorizado por {autor}")
+            await log_antinuke(guild, "♻️ Ban Revertido",
+                f"**Víctima:** {user.mention} (`{user.id}`)\n**Baneado por:** {autor.mention}\n**Acción:** Desbaneado automáticamente",
+                color=0x00FF88)
+        except Exception as e:
+            log.error(f"[AntiNuke] No pude desbanear a {user}: {e}")
+
+        # ── Castigar al que baneó ──
+        try:
+            m = guild.get_member(autor.id) or await guild.fetch_member(autor.id)
+        except Exception:
+            m = None
+        if m:
+            await ejecutar_castigo(guild, m, f"Ban no autorizado ({count} bans)")
+            await log_antinuke(guild, "🔨 Ban No Autorizado Detectado",
+                f"**Usuario:** {autor.mention} (`{autor.id}`)\n**Bans en ventana:** {count}\n**Acción:** `{cfg['accion']}`")
+        else:
+            # Si ya no está en el server, banear por ID directamente
+            try:
+                await guild.ban(discord.Object(id=autor.id), reason=f"[AntiNuke] Ban no autorizado ({count} bans)")
+                await log_antinuke(guild, "🔨 Ban No Autorizado (por ID)",
+                    f"**Usuario:** {autor.mention} (`{autor.id}`)\n**Bans:** {count}\n**Acción:** BAN por ID")
+            except Exception as e:
+                log.error(f"[AntiNuke] No pude banear a {autor} por ID: {e}")
     except Exception as e:
         log.error(f"[AntiNuke] on_member_ban: {e}")
 
@@ -261,14 +282,26 @@ async def on_member_remove(member: discord.Member):
         autor = entries[0].user
         if autor.bot or es_seguro(autor.id, member.guild):
             return
-        if entries[0].target.id == member.id:
-            count = registrar_accion(autor.id, "kick")
-            if count >= cfg["limites"]["kick"]:
-                m = member.guild.get_member(autor.id) or await member.guild.fetch_member(autor.id)
-                if m:
-                    await ejecutar_castigo(member.guild, m, f"Kick masivo ({count} kicks)")
-                    await log_antinuke(member.guild, "👢 Kick Masivo Detectado",
-                        f"**Usuario:** {autor.mention}\n**Kicks en ventana:** {count}\n**Acción:** `{cfg['accion']}`")
+        if entries[0].target.id != member.id:
+            return
+        count = registrar_accion(autor.id, "kick")
+
+        # ── Castigar al que kickeó desde el primer kick ──
+        try:
+            m = member.guild.get_member(autor.id) or await member.guild.fetch_member(autor.id)
+        except Exception:
+            m = None
+        if m:
+            await ejecutar_castigo(member.guild, m, f"Kick no autorizado ({count} kicks)")
+            await log_antinuke(member.guild, "👢 Kick No Autorizado Detectado",
+                f"**Usuario:** {autor.mention}\n**Kickeó a:** {member.mention}\n**Kicks en ventana:** {count}\n**Acción:** `{cfg['accion']}`")
+        else:
+            try:
+                await member.guild.ban(discord.Object(id=autor.id), reason=f"[AntiNuke] Kick no autorizado ({count})")
+                await log_antinuke(member.guild, "👢 Kick No Autorizado (por ID)",
+                    f"**Usuario:** {autor.mention} (`{autor.id}`)\n**Kicks:** {count}\n**Acción:** BAN por ID")
+            except Exception as e:
+                log.error(f"[AntiNuke] No pude castigar a {autor} por ID: {e}")
     except Exception as e:
         log.error(f"[AntiNuke] on_member_remove: {e}")
 
