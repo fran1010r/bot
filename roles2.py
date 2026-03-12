@@ -277,7 +277,7 @@ async def on_guild_role_delete(role: discord.Role):
     cfg = cargar_antinuke()
     if not cfg.get("activo"):
         return
-    await asyncio.sleep(0.5)  # Esperar que el audit log se registre
+    await asyncio.sleep(0.5)
     try:
         entries = [e async for e in role.guild.audit_logs(limit=5, action=discord.AuditLogAction.role_delete)]
         if not entries:
@@ -286,6 +286,28 @@ async def on_guild_role_delete(role: discord.Role):
         if autor.bot or es_seguro(autor.id, role.guild):
             return
         count = registrar_accion(autor.id, "roles")
+
+        # ── Restaurar el rol eliminado ──
+        try:
+            nuevo_rol = await role.guild.create_role(
+                name=role.name,
+                color=role.color,
+                hoist=role.hoist,
+                mentionable=role.mentionable,
+                permissions=role.permissions,
+                reason=f"[AntiNuke] Restaurando rol eliminado por {autor}"
+            )
+            # Intentar restaurar la posición
+            try:
+                await nuevo_rol.edit(position=role.position)
+            except Exception:
+                pass
+            await log_antinuke(role.guild, "♻️ Rol Restaurado",
+                f"**Rol:** `{role.name}`\n**Eliminado por:** {autor.mention}\n**Restaurado:** {nuevo_rol.mention}",
+                color=0x00FF88)
+        except Exception as e:
+            log.error(f"[AntiNuke] No pude restaurar rol {role.name}: {e}")
+
         if count >= cfg["limites"]["roles"]:
             m = role.guild.get_member(autor.id) or await role.guild.fetch_member(autor.id)
             if m:
@@ -309,6 +331,16 @@ async def on_guild_role_create(role: discord.Role):
         if autor.bot or es_seguro(autor.id, role.guild):
             return
         count = registrar_accion(autor.id, "roles")
+
+        # ── Eliminar el rol creado no autorizado ──
+        try:
+            await role.delete(reason=f"[AntiNuke] Rol no autorizado creado por {autor}")
+            await log_antinuke(role.guild, "🗑️ Rol No Autorizado Eliminado",
+                f"**Rol:** `{role.name}`\n**Creado por:** {autor.mention}\n**Acción:** Eliminado automáticamente",
+                color=0xFF8800)
+        except Exception as e:
+            log.error(f"[AntiNuke] No pude eliminar rol {role.name}: {e}")
+
         if count >= cfg["limites"]["roles"]:
             m = role.guild.get_member(autor.id) or await role.guild.fetch_member(autor.id)
             if m:
@@ -336,6 +368,57 @@ async def on_guild_channel_delete(channel):
         if autor.bot or es_seguro(autor.id, channel.guild):
             return
         count = registrar_accion(autor.id, "canales")
+
+        # ── Restaurar el canal eliminado ──
+        try:
+            # Guardar overwrites (permisos del canal)
+            overwrites = channel.overwrites
+
+            if isinstance(channel, discord.TextChannel):
+                nuevo_canal = await channel.guild.create_text_channel(
+                    name=channel.name,
+                    topic=channel.topic,
+                    slowmode_delay=channel.slowmode_delay,
+                    nsfw=channel.nsfw,
+                    overwrites=overwrites,
+                    category=channel.category,
+                    reason=f"[AntiNuke] Restaurando canal eliminado por {autor}"
+                )
+            elif isinstance(channel, discord.VoiceChannel):
+                nuevo_canal = await channel.guild.create_voice_channel(
+                    name=channel.name,
+                    bitrate=channel.bitrate,
+                    user_limit=channel.user_limit,
+                    overwrites=overwrites,
+                    category=channel.category,
+                    reason=f"[AntiNuke] Restaurando canal eliminado por {autor}"
+                )
+            elif isinstance(channel, discord.CategoryChannel):
+                nuevo_canal = await channel.guild.create_category(
+                    name=channel.name,
+                    overwrites=overwrites,
+                    reason=f"[AntiNuke] Restaurando categoría eliminada por {autor}"
+                )
+            else:
+                nuevo_canal = await channel.guild.create_text_channel(
+                    name=channel.name,
+                    overwrites=overwrites,
+                    category=channel.category,
+                    reason=f"[AntiNuke] Restaurando canal eliminado por {autor}"
+                )
+
+            # Intentar restaurar posición
+            try:
+                await nuevo_canal.edit(position=channel.position)
+            except Exception:
+                pass
+
+            await log_antinuke(channel.guild, "♻️ Canal Restaurado",
+                f"**Canal:** `#{channel.name}`\n**Eliminado por:** {autor.mention}\n**Restaurado:** {nuevo_canal.mention}",
+                color=0x00FF88)
+        except Exception as e:
+            log.error(f"[AntiNuke] No pude restaurar canal {channel.name}: {e}")
+
         if count >= cfg["limites"]["canales"]:
             m = channel.guild.get_member(autor.id) or await channel.guild.fetch_member(autor.id)
             if m:
@@ -359,6 +442,17 @@ async def on_guild_channel_create(channel):
         if autor.bot or es_seguro(autor.id, channel.guild):
             return
         count = registrar_accion(autor.id, "canales")
+
+        # ── Eliminar el canal creado no autorizado ──
+        try:
+            nombre = channel.name
+            await channel.delete(reason=f"[AntiNuke] Canal no autorizado creado por {autor}")
+            await log_antinuke(channel.guild, "🗑️ Canal No Autorizado Eliminado",
+                f"**Canal:** `#{nombre}`\n**Creado por:** {autor.mention}\n**Acción:** Eliminado automáticamente",
+                color=0xFF8800)
+        except Exception as e:
+            log.error(f"[AntiNuke] No pude eliminar canal {channel.name}: {e}")
+
         if count >= cfg["limites"]["canales"]:
             m = channel.guild.get_member(autor.id) or await channel.guild.fetch_member(autor.id)
             if m:
@@ -367,6 +461,7 @@ async def on_guild_channel_create(channel):
                     f"**Usuario:** {autor.mention}\n**Canales creados:** {count}\n**Acción:** `{cfg['accion']}`")
     except Exception as e:
         log.error(f"[AntiNuke] on_guild_channel_create: {e}")
+
 
 @bot.event
 async def on_webhooks_update(channel):
