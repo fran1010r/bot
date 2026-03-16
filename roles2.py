@@ -91,7 +91,6 @@ ANTINUKE_DEFAULT = {
         "roles": 3,
         "canales": 3,
         "webhooks": 3,
-
     },
     "ventana": 10,
     "accion": "ban",
@@ -126,38 +125,58 @@ ANTINUKE_DEFAULT = {
     "mute_rol": None,
 }
 
-def cargar_antinuke() -> dict:
+def _cargar_db_antinuke() -> dict:
+    """Carga el archivo completo (todos los servidores)."""
     if os.path.exists(ANTINUKE_FILE):
         with open(ANTINUKE_FILE, "r", encoding="utf-8") as f:
-            data = json.load(f)
-        for k, v in ANTINUKE_DEFAULT.items():
-            if k not in data:
-                data[k] = v
-        for k, v in ANTINUKE_DEFAULT["limites"].items():
-            if k not in data.get("limites", {}):
-                data.setdefault("limites", {})[k] = v
-        return data
-    return dict(ANTINUKE_DEFAULT)
+            return json.load(f)
+    return {}
 
-def guardar_antinuke(cfg: dict):
+def _guardar_db_antinuke(db: dict):
+    """Guarda el archivo completo (todos los servidores)."""
     with open(ANTINUKE_FILE, "w", encoding="utf-8") as f:
-        json.dump(cfg, f, indent=2, ensure_ascii=False)
+        json.dump(db, f, indent=2, ensure_ascii=False)
 
-# Contadores { user_id: [(timestamp, accion), ...] }
-_acciones      = defaultdict(list)
-_joins_recents = []   # para antiraid
-_spam_tracker  = defaultdict(list)  # para antispam
+def cargar_antinuke(guild_id: int = None) -> dict:
+    """Carga la config del AntiNuke para un servidor específico."""
+    db = _cargar_db_antinuke()
+    key = str(guild_id) if guild_id else "__global__"
+    data = db.get(key, {})
+    # Rellenar claves faltantes con defaults
+    import copy
+    resultado = copy.deepcopy(ANTINUKE_DEFAULT)
+    for k, v in data.items():
+        if k == "limites" and isinstance(v, dict):
+            resultado["limites"].update(v)
+        else:
+            resultado[k] = v
+    return resultado
 
-def registrar_accion(user_id: int, tipo: str) -> int:
-    cfg = cargar_antinuke()
+def guardar_antinuke(cfg: dict, guild_id: int = None):
+    """Guarda la config del AntiNuke para un servidor específico."""
+    db = _cargar_db_antinuke()
+    key = str(guild_id) if guild_id else "__global__"
+    db[key] = cfg
+    _guardar_db_antinuke(db)
+
+# Contadores { guild_id: { user_id: [(timestamp, accion), ...] } }
+_acciones      = defaultdict(lambda: defaultdict(list))
+_joins_recents = defaultdict(list)   # por guild
+_spam_tracker  = defaultdict(lambda: defaultdict(list))  # por guild
+
+def registrar_accion(user_id: int, tipo: str, guild_id: int = 0) -> int:
+    cfg     = cargar_antinuke(guild_id)
     ventana = cfg.get("ventana", 10)
     ahora   = time.time()
-    _acciones[user_id] = [(t, a) for t, a in _acciones[user_id] if ahora - t <= ventana]
-    _acciones[user_id].append((ahora, tipo))
-    return sum(1 for _, a in _acciones[user_id] if a == tipo)
+    _acciones[guild_id][user_id] = [
+        (t, a) for t, a in _acciones[guild_id][user_id] if ahora - t <= ventana
+    ]
+    _acciones[guild_id][user_id].append((ahora, tipo))
+    return sum(1 for _, a in _acciones[guild_id][user_id] if a == tipo)
 
 def es_seguro(user_id: int, guild: discord.Guild) -> bool:
-    cfg = cargar_antinuke()
+    """Comprueba whitelist SOLO del servidor actual."""
+    cfg = cargar_antinuke(guild.id)
     if guild.owner_id == user_id:
         return True
     owner = cfg.get("owner_id")
@@ -166,7 +185,7 @@ def es_seguro(user_id: int, guild: discord.Guild) -> bool:
     return user_id in [int(x) for x in cfg.get("whitelist", [])]
 
 def es_owner_an(ctx) -> bool:
-    cfg = cargar_antinuke()
+    cfg   = cargar_antinuke(ctx.guild.id)
     owner = cfg.get("owner_id")
     return (
         ctx.author.id == ctx.guild.owner_id
@@ -174,7 +193,7 @@ def es_owner_an(ctx) -> bool:
     )
 
 async def ejecutar_castigo(guild: discord.Guild, member, razon: str, accion: str = None):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(guild.id)
     if accion is None:
         accion = cfg.get("accion", "ban")
     # Si member es solo un ID, intentar obtener el objeto
@@ -206,7 +225,7 @@ async def ejecutar_castigo(guild: discord.Guild, member, razon: str, accion: str
         log.error(f"[AntiNuke] No pude aplicar castigo a {member}: {e}")
 
 async def log_antinuke(guild: discord.Guild, titulo: str, desc: str, color=0xFF0000):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(guild.id)
     canal_id = cfg.get("log_channel")
     if not canal_id:
         return
@@ -227,7 +246,7 @@ async def log_antinuke(guild: discord.Guild, titulo: str, desc: str, color=0xFF0
 
 @bot.event
 async def on_member_ban(guild: discord.Guild, user: discord.User):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(guild.id)
     if not cfg.get("activo"):
         return
     await asyncio.sleep(0.5)
@@ -238,7 +257,7 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
         autor = entries[0].user
         if autor.bot or es_seguro(autor.id, guild):
             return
-        count = registrar_accion(autor.id, "ban")
+        count = registrar_accion(autor.id, "ban", guild.id)
 
         # ── Desbanear a la víctima inmediatamente ──
         try:
@@ -271,7 +290,7 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
 
 @bot.event
 async def on_member_remove(member: discord.Member):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(member.guild.id)
     if not cfg.get("activo"):
         return
     await asyncio.sleep(0.5)
@@ -284,7 +303,7 @@ async def on_member_remove(member: discord.Member):
             return
         if entries[0].target.id != member.id:
             return
-        count = registrar_accion(autor.id, "kick")
+        count = registrar_accion(autor.id, "kick", member.guild.id)
 
         # ── Castigar al que kickeó desde el primer kick ──
         try:
@@ -307,7 +326,7 @@ async def on_member_remove(member: discord.Member):
 
 @bot.event
 async def on_guild_role_delete(role: discord.Role):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(role.guild.id)
     if not cfg.get("activo"):
         return
     await asyncio.sleep(0.5)
@@ -318,7 +337,7 @@ async def on_guild_role_delete(role: discord.Role):
         autor = entries[0].user
         if autor.bot or es_seguro(autor.id, role.guild):
             return
-        count = registrar_accion(autor.id, "roles")
+        count = registrar_accion(autor.id, "roles", role.guild.id)
 
         # ── Restaurar el rol eliminado ──
         try:
@@ -352,7 +371,7 @@ async def on_guild_role_delete(role: discord.Role):
 
 @bot.event
 async def on_guild_role_create(role: discord.Role):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(role.guild.id)
     if not cfg.get("activo"):
         return
     await asyncio.sleep(0.5)
@@ -363,7 +382,7 @@ async def on_guild_role_create(role: discord.Role):
         autor = entries[0].user
         if autor.bot or es_seguro(autor.id, role.guild):
             return
-        count = registrar_accion(autor.id, "roles")
+        count = registrar_accion(autor.id, "roles", role.guild.id)
 
         # ── Eliminar el rol creado no autorizado ──
         try:
@@ -389,7 +408,7 @@ async def on_guild_role_update(before: discord.Role, after: discord.Role):
 
 @bot.event
 async def on_guild_channel_delete(channel):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(channel.guild.id)
     if not cfg.get("activo"):
         return
     await asyncio.sleep(0.5)
@@ -400,7 +419,7 @@ async def on_guild_channel_delete(channel):
         autor = entries[0].user
         if autor.bot or es_seguro(autor.id, channel.guild):
             return
-        count = registrar_accion(autor.id, "canales")
+        count = registrar_accion(autor.id, "canales", channel.guild.id)
 
         # ── Restaurar el canal eliminado ──
         try:
@@ -463,7 +482,7 @@ async def on_guild_channel_delete(channel):
 
 @bot.event
 async def on_guild_channel_create(channel):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(channel.guild.id)
     if not cfg.get("activo"):
         return
     await asyncio.sleep(0.5)
@@ -474,7 +493,7 @@ async def on_guild_channel_create(channel):
         autor = entries[0].user
         if autor.bot or es_seguro(autor.id, channel.guild):
             return
-        count = registrar_accion(autor.id, "canales")
+        count = registrar_accion(autor.id, "canales", channel.guild.id)
 
         # ── Eliminar el canal creado no autorizado ──
         try:
@@ -498,7 +517,7 @@ async def on_guild_channel_create(channel):
 
 @bot.event
 async def on_webhooks_update(channel):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(channel.guild.id)
     if not cfg.get("activo"):
         return
     await asyncio.sleep(0.5)
@@ -509,7 +528,7 @@ async def on_webhooks_update(channel):
         autor = entries[0].user
         if autor.bot or es_seguro(autor.id, channel.guild):
             return
-        count = registrar_accion(autor.id, "webhooks")
+        count = registrar_accion(autor.id, "webhooks", channel.guild.id)
         if count >= cfg["limites"]["webhooks"]:
             m = channel.guild.get_member(autor.id) or await channel.guild.fetch_member(autor.id)
             if m:
@@ -521,7 +540,7 @@ async def on_webhooks_update(channel):
 
 @bot.event
 async def on_member_join(member: discord.Member):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(member.guild.id)
 
     # ── AntiBot ──
     if cfg.get("antibot", {}).get("activo") and member.bot:
@@ -539,13 +558,14 @@ async def on_member_join(member: discord.Member):
     # ── AntiRaid ──
     ar = cfg.get("antiraid", {})
     if ar.get("activo"):
-        ahora = time.time()
-        _joins_recents.append(ahora)
-        # Limpiar fuera de ventana
+        ahora   = time.time()
+        gid     = member.guild.id
         ventana = ar.get("joins_ventana", 10)
-        while _joins_recents and ahora - _joins_recents[0] > ventana:
-            _joins_recents.pop(0)
-        if len(_joins_recents) >= ar.get("joins_limite", 10):
+        _joins_recents[gid].append(ahora)
+        # Limpiar fuera de ventana
+        while _joins_recents[gid] and ahora - _joins_recents[gid][0] > ventana:
+            _joins_recents[gid].pop(0)
+        if len(_joins_recents[gid]) >= ar.get("joins_limite", 10):
             accion = ar.get("accion", "kick")
             try:
                 if accion == "kick":
@@ -555,7 +575,7 @@ async def on_member_join(member: discord.Member):
             except Exception:
                 pass
             await log_antinuke(member.guild, "🚨 Raid Detectada",
-                f"**Joins en {ventana}s:** {len(_joins_recents)}\n**Último:** {member.mention}\n**Acción:** `{accion}`",
+                f"**Joins en {ventana}s:** {len(_joins_recents[gid])}\n**Último:** {member.mention}\n**Acción:** `{accion}`",
                 color=0xFF4400)
 
     # ── Verificación ──
@@ -574,7 +594,7 @@ async def on_message(message: discord.Message):
         await bot.process_commands(message)
         return
 
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(message.guild.id)
 
     # ── AntiLinks ──
     al = cfg.get("antilinks", {})
@@ -598,19 +618,20 @@ async def on_message(message: discord.Message):
     # ── AntiSpam ──
     asp = cfg.get("antispam", {})
     if asp.get("activo") and not es_seguro(message.author.id, message.guild):
-        ahora = time.time()
+        ahora   = time.time()
         ventana = asp.get("ventana", 5)
         limite  = asp.get("mensajes_limite", 5)
+        gid     = message.guild.id
         uid     = message.author.id
-        _spam_tracker[uid] = [t for t in _spam_tracker[uid] if ahora - t <= ventana]
-        _spam_tracker[uid].append(ahora)
-        if len(_spam_tracker[uid]) >= limite:
+        _spam_tracker[gid][uid] = [t for t in _spam_tracker[gid][uid] if ahora - t <= ventana]
+        _spam_tracker[gid][uid].append(ahora)
+        if len(_spam_tracker[gid][uid]) >= limite:
             try:
                 import datetime as dt
                 until = discord.utils.utcnow() + dt.timedelta(minutes=5)
                 await message.author.timeout(until, reason="[AntiSpam] Spam detectado")
                 await message.channel.send(f"🔇 {message.author.mention} fue silenciado por spam.", delete_after=5)
-                _spam_tracker[uid] = []
+                _spam_tracker[gid][uid] = []
                 await log_antinuke(message.guild, "💬 Spam Detectado",
                     f"**Usuario:** {message.author.mention}\n**Canal:** {message.channel.mention}", color=0xFF8800)
             except Exception:
@@ -622,7 +643,7 @@ async def on_message(message: discord.Message):
 
 @bot.event
 async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(payload.guild_id)
     ver = cfg.get("verificacion", {})
     if not ver.get("activo"):
         return
@@ -662,19 +683,25 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 @commands.check(es_owner_an)
 async def antinuke_status(ctx):
     """👑 OWNER — Estado del AntiNuke."""
-    cfg = cargar_antinuke()
+    cfg    = cargar_antinuke(ctx.guild.id)
     estado = "✅ Activo" if cfg["activo"] else "❌ Desactivado"
+
+    # Mostrar SOLO los que están en este servidor
     wl = cfg.get("whitelist", [])
-    wl_txt = ", ".join(f"<@{uid}>" for uid in wl) if wl else "Nadie"
+    wl_members = []
+    for uid in wl:
+        m = ctx.guild.get_member(int(uid))
+        if m:
+            wl_members.append(m.mention)
+    wl_txt = ", ".join(wl_members) if wl_members else "Nadie"
+
     embed = discord.Embed(title="🛡️ AntiNuke — Panel Completo", color=0x00FF88 if cfg["activo"] else 0xFF0000)
     embed.add_field(name="Estado",   value=estado,                            inline=True)
     embed.add_field(name="Acción",   value=cfg.get("accion", "ban").upper(),  inline=True)
     embed.add_field(name="Ventana",  value=f"{cfg.get('ventana', 10)}s",      inline=True)
-    # Límites
     lim = cfg.get("limites", {})
     embed.add_field(name="Límites",
         value="\n".join(f"`{k}`: {v}" for k, v in lim.items()), inline=True)
-    # Módulos
     ar  = cfg.get("antiraid", {})
     al  = cfg.get("antilinks", {})
     asp = cfg.get("antispam", {})
@@ -686,10 +713,10 @@ async def antinuke_status(ctx):
             f"AntiSpam: {'✅' if asp.get('activo') else '❌'}\n"
             f"AntiBot: {'✅' if ab.get('activo') else '❌'}"
         ), inline=True)
-    embed.add_field(name="Whitelist", value=wl_txt, inline=False)
+    embed.add_field(name=f"Whitelist ({len(wl_members)})", value=wl_txt, inline=False)
     log_ch = cfg.get("log_channel")
     embed.add_field(name="Canal logs", value=f"<#{log_ch}>" if log_ch else "No configurado", inline=False)
-    embed.set_footer(text=f"Usa !an_ayuda para ver todos los comandos")
+    embed.set_footer(text=f"Servidor: {ctx.guild.name} | Usa !an_ayuda para ver todos los comandos")
     await ctx.send(embed=embed)
 
 @bot.command(name="an_ayuda")
@@ -743,27 +770,59 @@ async def an_ayuda(ctx):
 @bot.command(name="an_activar")
 @commands.check(es_owner_an)
 async def an_activar(ctx):
-    cfg = cargar_antinuke(); cfg["activo"] = True; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg["activo"] = True; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send("✅ AntiNuke **activado**.")
 
 @bot.command(name="an_desactivar")
 @commands.check(es_owner_an)
 async def an_desactivar(ctx):
-    cfg = cargar_antinuke(); cfg["activo"] = False; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg["activo"] = False; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send("⚠️ AntiNuke **desactivado**. El servidor queda sin protección.")
 
 @bot.command(name="an_whitelist")
 @commands.check(es_owner_an)
-async def an_whitelist(ctx, member: discord.Member):
-    cfg = cargar_antinuke()
+async def an_whitelist(ctx, member: discord.Member = None):
+    """👑 OWNER — Añade/quita de whitelist o muestra la lista. !an_whitelist [@user]"""
+    cfg = cargar_antinuke(ctx.guild.id)
     wl  = cfg.get("whitelist", [])
+
+    # Sin argumento → mostrar lista del servidor actual
+    if member is None:
+        wl_members = []
+        for uid in wl:
+            m = ctx.guild.get_member(int(uid))
+            if m:
+                wl_members.append(f"{m.mention} (`{m.id}`)")
+        embed = discord.Embed(
+            title=f"🛡️ Whitelist — {ctx.guild.name}",
+            description="\n".join(wl_members) if wl_members else "Nadie en la whitelist.",
+            color=0x00FF88
+        )
+        embed.set_footer(text=f"Solo se muestran miembros de este servidor")
+        return await ctx.send(embed=embed)
+
     uid = str(member.id)
     if uid in wl:
-        wl.remove(uid); cfg["whitelist"] = wl; guardar_antinuke(cfg)
-        await ctx.send(f"🗑️ {member.mention} **quitado** de la whitelist.")
+        wl.remove(uid)
+        cfg["whitelist"] = wl
+        guardar_antinuke(cfg, ctx.guild.id)
+        embed = discord.Embed(
+            title="🗑️ Quitado de Whitelist",
+            description=f"{member.mention} ya **no está** en la whitelist de **{ctx.guild.name}**.",
+            color=discord.Color.red()
+        )
     else:
-        wl.append(uid); cfg["whitelist"] = wl; guardar_antinuke(cfg)
-        await ctx.send(f"✅ {member.mention} **añadido** a la whitelist.")
+        wl.append(uid)
+        cfg["whitelist"] = wl
+        guardar_antinuke(cfg, ctx.guild.id)
+        embed = discord.Embed(
+            title="✅ Añadido a Whitelist",
+            description=f"{member.mention} ahora está en la whitelist de **{ctx.guild.name}**.\nEl AntiNuke lo ignorará en este servidor.",
+            color=discord.Color.green()
+        )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.set_footer(text=f"Por {ctx.author.display_name} | Solo aplica en este servidor")
+    await ctx.send(embed=embed)
 
 @bot.command(name="an_accion")
 @commands.check(es_owner_an)
@@ -771,7 +830,7 @@ async def an_accion(ctx, accion: str):
     accion = accion.lower()
     if accion not in ("ban", "kick", "quitar_roles"):
         return await ctx.send("❌ Opciones: `ban`, `kick`, `quitar_roles`")
-    cfg = cargar_antinuke(); cfg["accion"] = accion; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg["accion"] = accion; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send(f"✅ Acción → **{accion.upper()}**.")
 
 @bot.command(name="an_limite")
@@ -782,7 +841,7 @@ async def an_limite(ctx, tipo: str, cantidad: int):
         return await ctx.send(f"❌ Tipos: {', '.join(f'`{t}`' for t in tipos)}")
     if not 0 <= cantidad <= 20:
         return await ctx.send("❌ Entre 0 y 20.")
-    cfg = cargar_antinuke(); cfg["limites"][tipo] = cantidad; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg["limites"][tipo] = cantidad; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send(f"✅ Límite `{tipo}` → **{cantidad}**.")
 
 @bot.command(name="an_ventana")
@@ -790,23 +849,23 @@ async def an_limite(ctx, tipo: str, cantidad: int):
 async def an_ventana(ctx, segundos: int):
     if not 5 <= segundos <= 120:
         return await ctx.send("❌ Entre 5 y 120 segundos.")
-    cfg = cargar_antinuke(); cfg["ventana"] = segundos; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg["ventana"] = segundos; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send(f"✅ Ventana → **{segundos}s**.")
 
 @bot.command(name="an_logs")
 @commands.check(es_owner_an)
 async def an_logs(ctx, canal: discord.TextChannel = None):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(ctx.guild.id)
     if canal is None:
-        cfg["log_channel"] = None; guardar_antinuke(cfg)
+        cfg["log_channel"] = None; guardar_antinuke(cfg, ctx.guild.id)
         return await ctx.send("🗑️ Canal de logs **eliminado**.")
-    cfg["log_channel"] = str(canal.id); guardar_antinuke(cfg)
+    cfg["log_channel"] = str(canal.id); guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send(f"✅ Canal de logs → {canal.mention}.")
 
 @bot.command(name="an_owner")
 @commands.check(lambda ctx: ctx.author.id == ctx.guild.owner_id)
 async def an_owner(ctx, member: discord.Member):
-    cfg = cargar_antinuke(); cfg["owner_id"] = str(member.id); guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg["owner_id"] = str(member.id); guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send(f"✅ {member.mention} es ahora el **owner del AntiNuke**.")
 
 # ── AntiRaid ───────────────────────────────────────────────────
@@ -814,7 +873,7 @@ async def an_owner(ctx, member: discord.Member):
 @bot.command(name="an_antiraid")
 @commands.check(es_owner_an)
 async def an_antiraid_status(ctx):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(ctx.guild.id)
     ar  = cfg.get("antiraid", {})
     embed = discord.Embed(title="🚨 AntiRaid", color=0x00FF88 if ar.get("activo") else 0xFF0000)
     embed.add_field(name="Estado",   value="✅ Activo" if ar.get("activo") else "❌ Desactivado", inline=True)
@@ -826,13 +885,13 @@ async def an_antiraid_status(ctx):
 @bot.command(name="an_antiraid_on")
 @commands.check(es_owner_an)
 async def an_antiraid_on(ctx):
-    cfg = cargar_antinuke(); cfg.setdefault("antiraid", {})["activo"] = True; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg.setdefault("antiraid", {})["activo"] = True; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send("✅ AntiRaid **activado**.")
 
 @bot.command(name="an_antiraid_off")
 @commands.check(es_owner_an)
 async def an_antiraid_off(ctx):
-    cfg = cargar_antinuke(); cfg.setdefault("antiraid", {})["activo"] = False; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg.setdefault("antiraid", {})["activo"] = False; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send("⚠️ AntiRaid **desactivado**.")
 
 @bot.command(name="an_antiraid_config")
@@ -840,9 +899,9 @@ async def an_antiraid_off(ctx):
 async def an_antiraid_config(ctx, joins: int, ventana: int, accion: str = "kick"):
     if accion not in ("kick", "ban"):
         return await ctx.send("❌ Acción: `kick` o `ban`")
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(ctx.guild.id)
     cfg.setdefault("antiraid", {}).update({"joins_limite": joins, "joins_ventana": ventana, "accion": accion})
-    guardar_antinuke(cfg)
+    guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send(f"✅ AntiRaid → **{joins} joins** en **{ventana}s** → **{accion}**.")
 
 # ── AntiLinks ──────────────────────────────────────────────────
@@ -850,24 +909,24 @@ async def an_antiraid_config(ctx, joins: int, ventana: int, accion: str = "kick"
 @bot.command(name="an_antilinks_on")
 @commands.check(es_owner_an)
 async def an_antilinks_on(ctx):
-    cfg = cargar_antinuke(); cfg.setdefault("antilinks", {})["activo"] = True; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg.setdefault("antilinks", {})["activo"] = True; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send("✅ AntiLinks **activado**.")
 
 @bot.command(name="an_antilinks_off")
 @commands.check(es_owner_an)
 async def an_antilinks_off(ctx):
-    cfg = cargar_antinuke(); cfg.setdefault("antilinks", {})["activo"] = False; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg.setdefault("antilinks", {})["activo"] = False; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send("⚠️ AntiLinks **desactivado**.")
 
 @bot.command(name="an_links_canal")
 @commands.check(es_owner_an)
 async def an_links_canal(ctx, canal: discord.TextChannel):
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(ctx.guild.id)
     wl  = cfg.setdefault("antilinks", {}).setdefault("whitelist_canales", [])
     cid = str(canal.id)
     if cid in wl: wl.remove(cid); accion = "quitado de"
     else: wl.append(cid); accion = "añadido a"
-    guardar_antinuke(cfg)
+    guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send(f"✅ {canal.mention} **{accion}** la whitelist de links.")
 
 @bot.command(name="an_links_rol")
@@ -876,12 +935,12 @@ async def an_links_rol(ctx, *, nombre_rol: str):
     rol = discord.utils.get(ctx.guild.roles, name=nombre_rol)
     if not rol:
         return await ctx.send(f"❌ Rol `{nombre_rol}` no encontrado.")
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(ctx.guild.id)
     wl  = cfg.setdefault("antilinks", {}).setdefault("whitelist_roles", [])
     rid = str(rol.id)
     if rid in wl: wl.remove(rid); accion = "quitado de"
     else: wl.append(rid); accion = "añadido a"
-    guardar_antinuke(cfg)
+    guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send(f"✅ **{rol.name}** **{accion}** la whitelist de links.")
 
 # ── AntiSpam ───────────────────────────────────────────────────
@@ -889,13 +948,13 @@ async def an_links_rol(ctx, *, nombre_rol: str):
 @bot.command(name="an_antispam_on")
 @commands.check(es_owner_an)
 async def an_antispam_on(ctx):
-    cfg = cargar_antinuke(); cfg.setdefault("antispam", {})["activo"] = True; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg.setdefault("antispam", {})["activo"] = True; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send("✅ AntiSpam **activado**.")
 
 @bot.command(name="an_antispam_off")
 @commands.check(es_owner_an)
 async def an_antispam_off(ctx):
-    cfg = cargar_antinuke(); cfg.setdefault("antispam", {})["activo"] = False; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg.setdefault("antispam", {})["activo"] = False; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send("⚠️ AntiSpam **desactivado**.")
 
 @bot.command(name="an_spam_config")
@@ -903,9 +962,9 @@ async def an_antispam_off(ctx):
 async def an_spam_config(ctx, mensajes: int, ventana: int):
     if not 3 <= mensajes <= 20 or not 3 <= ventana <= 30:
         return await ctx.send("❌ mensajes: 3–20 | ventana: 3–30s")
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(ctx.guild.id)
     cfg.setdefault("antispam", {}).update({"mensajes_limite": mensajes, "ventana": ventana})
-    guardar_antinuke(cfg)
+    guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send(f"✅ AntiSpam → **{mensajes} msgs** en **{ventana}s**.")
 
 # ── AntiBot ────────────────────────────────────────────────────
@@ -913,13 +972,13 @@ async def an_spam_config(ctx, mensajes: int, ventana: int):
 @bot.command(name="an_antibot_on")
 @commands.check(es_owner_an)
 async def an_antibot_on(ctx):
-    cfg = cargar_antinuke(); cfg.setdefault("antibot", {})["activo"] = True; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg.setdefault("antibot", {})["activo"] = True; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send("✅ AntiBot **activado**. Bots no autorizados serán expulsados.")
 
 @bot.command(name="an_antibot_off")
 @commands.check(es_owner_an)
 async def an_antibot_off(ctx):
-    cfg = cargar_antinuke(); cfg.setdefault("antibot", {})["activo"] = False; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg.setdefault("antibot", {})["activo"] = False; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send("⚠️ AntiBot **desactivado**.")
 
 # ── Verificación ───────────────────────────────────────────────
@@ -928,13 +987,13 @@ async def an_antibot_off(ctx):
 @commands.check(es_owner_an)
 async def an_ver_setup(ctx, canal: discord.TextChannel, rol_ver: discord.Role, rol_no_ver: discord.Role = None):
     """Setup verificación. !an_ver_setup #canal @rol_verificado [@rol_no_verificado]"""
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(ctx.guild.id)
     cfg.setdefault("verificacion", {}).update({
         "canal": str(canal.id),
         "rol_verificado": str(rol_ver.id),
         "rol_no_verificado": str(rol_no_ver.id) if rol_no_ver else None,
     })
-    guardar_antinuke(cfg)
+    guardar_antinuke(cfg, ctx.guild.id)
     # Enviar mensaje de verificación
     embed = discord.Embed(
         title="✅ Verificación",
@@ -948,13 +1007,13 @@ async def an_ver_setup(ctx, canal: discord.TextChannel, rol_ver: discord.Role, r
 @bot.command(name="an_ver_on")
 @commands.check(es_owner_an)
 async def an_ver_on(ctx):
-    cfg = cargar_antinuke(); cfg.setdefault("verificacion", {})["activo"] = True; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg.setdefault("verificacion", {})["activo"] = True; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send("✅ Verificación **activada**.")
 
 @bot.command(name="an_ver_off")
 @commands.check(es_owner_an)
 async def an_ver_off(ctx):
-    cfg = cargar_antinuke(); cfg.setdefault("verificacion", {})["activo"] = False; guardar_antinuke(cfg)
+    cfg = cargar_antinuke(ctx.guild.id); cfg.setdefault("verificacion", {})["activo"] = False; guardar_antinuke(cfg, ctx.guild.id)
     await ctx.send("⚠️ Verificación **desactivada**.")
 
 # ── Sistema de Warns ───────────────────────────────────────────
@@ -1776,44 +1835,189 @@ async def massnick(ctx, *, nuevo: str):
 #  🔒 COMANDO !v — DAR ROL ARN (Solo Admin)
 # ═════════════════════════════════════════════════════════════
 
-# Roles por servidor — cada servidor usa el que le corresponde
-ROLES_V = {
-    # servidor_id : rol_id_a_dar
-    # Si el servidor no está en el dict, intenta con ambos IDs
+# Roles por servidor
+ROLES_POR_SERVIDOR = {
+    1476763559982534829: {  # yakz ; f SOON
+        "dar":    1477556485092544532,  # Members
+        "quitar": 1479630235283624049,  # sin acceso
+    },
+    1473493322403414280: {  # /rage
+        "dar":    1473493514770972922,  # /arn
+        "quitar": None,
+    },
+    1480185559145250907: {  # /rage (servidor 2)
+        "dar":    1473493514770972922,  # /arn
+        "quitar": None,
+    },
 }
-ROL_MEMBERS_ID = 1477556485092544532   # ID del rol Members (servidor 1)
-ROL_ARN_ID     = 1473493514770972922   # ID del rol /arn     (servidor 2)
+
+class VerView(discord.ui.View):
+    def __init__(self, ctx, member: discord.Member):
+        super().__init__(timeout=60)
+        self.ctx    = ctx
+        self.member = member
+        self.confirmado    = False
+        self.rol_dar_id    = ROLES_POR_SERVIDOR.get(ctx.guild.id, {}).get("dar")
+        self.rol_quitar_id = ROLES_POR_SERVIDOR.get(ctx.guild.id, {}).get("quitar", "ALL")
+        if self.rol_quitar_id is None:
+            self.rol_quitar_id = "ALL"
+
+        # Roles disponibles en el servidor (max 24 para dejar lugar a "TODOS")
+        roles_validos = [
+            r for r in sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True)
+            if r != ctx.guild.default_role
+            and not r.managed
+            and r < ctx.guild.me.top_role
+        ][:24]
+
+        # ── Select: rol a DAR ──
+        opts_dar = [
+            discord.SelectOption(
+                label=r.name[:100],
+                value=str(r.id),
+                default=(r.id == self.rol_dar_id)
+            )
+            for r in roles_validos
+        ]
+        if opts_dar:
+            sel_dar = discord.ui.Select(
+                placeholder="🟢 Rol a DAR...",
+                options=opts_dar,
+                row=0
+            )
+            sel_dar.callback = self.cb_dar
+            self.add_item(sel_dar)
+
+        # ── Select: rol a QUITAR ──
+        opts_quitar = [
+            discord.SelectOption(
+                label="🗑️ TODOS los roles",
+                value="ALL",
+                default=(self.rol_quitar_id == "ALL")
+            )
+        ] + [
+            discord.SelectOption(
+                label=r.name[:100],
+                value=str(r.id),
+                default=(isinstance(self.rol_quitar_id, int) and r.id == self.rol_quitar_id)
+            )
+            for r in roles_validos
+        ]
+        sel_quitar = discord.ui.Select(
+            placeholder="🔴 Rol a QUITAR (o todos)...",
+            options=opts_quitar[:25],
+            row=1
+        )
+        sel_quitar.callback = self.cb_quitar
+        self.add_item(sel_quitar)
+
+        # ── Botones ──
+        btn_ok = discord.ui.Button(label="✅ Confirmar", style=discord.ButtonStyle.success, row=2)
+        btn_ok.callback = self.cb_confirmar
+        self.add_item(btn_ok)
+
+        btn_cancel = discord.ui.Button(label="❌ Cancelar", style=discord.ButtonStyle.danger, row=2)
+        btn_cancel.callback = self.cb_cancelar
+        self.add_item(btn_cancel)
+
+    async def interaction_check(self, interaction: discord.Interaction) -> bool:
+        if interaction.user.id != self.ctx.author.id:
+            await interaction.response.send_message("❌ Solo quien ejecutó el comando puede usar esto.", ephemeral=True)
+            return False
+        return True
+
+    async def cb_dar(self, interaction: discord.Interaction):
+        self.rol_dar_id = int(interaction.data["values"][0])
+        rol = self.ctx.guild.get_role(self.rol_dar_id)
+        await interaction.response.send_message(f"🟢 Rol a dar: **{rol.name if rol else self.rol_dar_id}**", ephemeral=True)
+
+    async def cb_quitar(self, interaction: discord.Interaction):
+        val = interaction.data["values"][0]
+        self.rol_quitar_id = "ALL" if val == "ALL" else int(val)
+        if val == "ALL":
+            texto = "🗑️ Se quitarán **TODOS** los roles"
+        else:
+            rol = self.ctx.guild.get_role(int(val))
+            texto = f"🔴 Rol a quitar: **{rol.name if rol else val}**"
+        await interaction.response.send_message(texto, ephemeral=True)
+
+    async def cb_confirmar(self, interaction: discord.Interaction):
+        await interaction.response.defer()
+        self.confirmado = True
+        self.stop()
+
+    async def cb_cancelar(self, interaction: discord.Interaction):
+        await interaction.response.send_message("❌ Cancelado.", ephemeral=True)
+        self.stop()
+
 
 @bot.command(name="v")
 @commands.check(es_admin)
 async def dar_rol_arn(ctx, member: discord.Member):
-    """🔒 ADMIN — Da Members o /arn (según el servidor) y elimina todos los demás roles. !v @usuario"""
+    """🔒 ADMIN — Da acceso con selector de roles. !v @usuario"""
 
-    # Detectar qué rol usar según el servidor actual
-    rol_dar = None
-    for rol_id in [ROL_MEMBERS_ID, ROL_ARN_ID]:
-        r = ctx.guild.get_role(rol_id)
-        if r is not None:
-            rol_dar = r
-            break
+    cfg_srv        = ROLES_POR_SERVIDOR.get(ctx.guild.id, {})
+    dar_default    = cfg_srv.get("dar")
+    quitar_default = cfg_srv.get("quitar")
 
-    if rol_dar is None:
-        return await ctx.send("❌ No encontré el rol de acceso en este servidor. Verifica los IDs en el código.")
+    rol_dar_nombre    = ctx.guild.get_role(dar_default).name    if dar_default    and ctx.guild.get_role(dar_default)    else "Sin configurar"
+    rol_quitar_nombre = ctx.guild.get_role(quitar_default).name if quitar_default and ctx.guild.get_role(quitar_default) else "Todos los roles"
 
-    # Quitar TODOS los roles que tenga el usuario (excepto @everyone y roles no gestionables)
-    roles_a_quitar = [
-        r for r in member.roles
-        if r != ctx.guild.default_role
-        and not r.managed
-        and r < ctx.guild.me.top_role
-        and r.id != rol_dar.id  # no quitar el que vamos a dar
-    ]
+    embed = discord.Embed(
+        title="🔑 Dar Acceso — Configuración",
+        description=(
+            f"Configurando acceso para {member.mention}\n\n"
+            f"Usa los menús para cambiar la selección o confirma con los valores por defecto."
+        ),
+        color=discord.Color.blurple()
+    )
+    embed.set_thumbnail(url=member.display_avatar.url)
+    embed.add_field(name="👤 Usuario",           value=member.mention,              inline=True)
+    embed.add_field(name="🟢 Rol a dar",         value=f"**{rol_dar_nombre}**",     inline=True)
+    embed.add_field(name="🔴 Rol(es) a quitar",  value=f"**{rol_quitar_nombre}**",  inline=True)
+    embed.set_footer(text="Tienes 60 segundos — este mensaje se eliminará al terminar")
+
+    view = VerView(ctx, member)
+    msg  = await ctx.send(embed=embed, view=view)
+    await view.wait()
+
+    try:
+        await msg.delete()
+    except Exception:
+        pass
+
+    if not view.confirmado:
+        return
+
+    rol_dar_id    = view.rol_dar_id
+    rol_quitar_id = view.rol_quitar_id
+
+    if not rol_dar_id:
+        return await ctx.send("❌ No hay rol configurado para dar. Selecciona uno en el menú.")
+
+    rol_dar = ctx.guild.get_role(rol_dar_id)
+    if not rol_dar:
+        return await ctx.send("❌ No encontré el rol a dar.")
+
+    # ── Quitar roles ──
     roles_quitados = []
     roles_fallidos = []
 
+    if rol_quitar_id == "ALL":
+        roles_a_quitar = [
+            r for r in member.roles
+            if r != ctx.guild.default_role
+            and not r.managed
+            and r < ctx.guild.me.top_role
+            and r.id != rol_dar.id
+        ]
+    else:
+        r = ctx.guild.get_role(rol_quitar_id)
+        roles_a_quitar = [r] if r and r in member.roles else []
+
     if roles_a_quitar:
         try:
-            await member.remove_roles(*roles_a_quitar, reason=f"!v — limpieza por {ctx.author}")
+            await member.remove_roles(*roles_a_quitar, reason=f"!v — {ctx.author}")
             roles_quitados = roles_a_quitar
         except discord.Forbidden:
             for r in roles_a_quitar:
@@ -1823,29 +2027,34 @@ async def dar_rol_arn(ctx, member: discord.Member):
                 except discord.Forbidden:
                     roles_fallidos.append(r)
 
-    # Dar el rol
+    # ── Dar rol ──
     try:
-        await member.add_roles(rol_dar, reason=f"!v — acceso dado por {ctx.author}")
+        await member.add_roles(rol_dar, reason=f"!v — acceso por {ctx.author}")
     except discord.Forbidden:
         return await ctx.send(f"❌ No pude asignar **{rol_dar.name}**. Sube el rol del bot en la jerarquía.")
 
-    embed = discord.Embed(title="✅ Acceso Concedido", color=discord.Color.green())
-    embed.set_thumbnail(url=member.display_avatar.url)
-    embed.add_field(name="👤 Miembro",   value=member.mention,        inline=True)
-    embed.add_field(name="✅ Rol dado",  value=f"**{rol_dar.name}**", inline=True)
-    embed.add_field(name="✍️ Por",        value=ctx.author.mention,    inline=True)
-
+    # ── Embed resultado ──
+    embed_ok = discord.Embed(title="✅ Acceso Concedido", color=discord.Color.green())
+    embed_ok.set_thumbnail(url=member.display_avatar.url)
+    embed_ok.add_field(name="👤 Miembro",   value=member.mention,        inline=True)
+    embed_ok.add_field(name="✅ Rol dado",  value=f"**{rol_dar.name}**", inline=True)
+    embed_ok.add_field(name="✍️ Por",        value=ctx.author.mention,    inline=True)
     if roles_quitados:
-        nombres = ", ".join(f"`{r.name}`" for r in roles_quitados)
-        embed.add_field(name=f"🗑️ Roles eliminados ({len(roles_quitados)})", value=nombres, inline=False)
+        embed_ok.add_field(
+            name=f"🗑️ Roles quitados ({len(roles_quitados)})",
+            value=", ".join(f"`{r.name}`" for r in roles_quitados),
+            inline=False
+        )
     if roles_fallidos:
-        nombres_f = ", ".join(f"`{r.name}`" for r in roles_fallidos)
-        embed.add_field(name="⚠️ No se pudieron quitar", value=nombres_f, inline=False)
-
-    embed.set_footer(text="Este mensaje se eliminará en 15 segundos")
-    msg = await ctx.send(embed=embed)
+        embed_ok.add_field(
+            name="⚠️ No se pudieron quitar",
+            value=", ".join(f"`{r.name}`" for r in roles_fallidos),
+            inline=False
+        )
+    embed_ok.set_footer(text="Este mensaje se eliminará en 15 segundos")
+    msg_ok = await ctx.send(embed=embed_ok)
     await asyncio.sleep(15)
-    await msg.delete()
+    await msg_ok.delete()
 
 @dar_rol_arn.error
 async def dar_rol_arn_error(ctx, error):
@@ -1855,6 +2064,8 @@ async def dar_rol_arn_error(ctx, error):
         await ctx.send("❌ Usuario no encontrado.")
     elif isinstance(error, commands.CheckFailure):
         await ctx.send("🔒 Solo administradores.")
+
+
 
 
 # ═════════════════════════════════════════════════════════════
@@ -2025,7 +2236,7 @@ async def reporte(ctx, member: discord.Member, *, razon: str):
     embed.add_field(name="📋 Razón",         value=razon,              inline=False)
     embed.add_field(name="📩 Por",           value=ctx.author.mention, inline=False)
     embed.add_field(name="📍 Canal",         value=ctx.channel.mention, inline=False)
-    cfg = cargar_antinuke()
+    cfg = cargar_antinuke(ctx.guild.id)
     log_ch_id = cfg.get("log_channel")
     canal_destino = ctx.guild.get_channel(int(log_ch_id)) if log_ch_id else ctx.channel
     await canal_destino.send(embed=embed)
