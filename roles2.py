@@ -1851,6 +1851,86 @@ ROLES_POR_SERVIDOR = {
     },
 }
 
+class BuscarRolModal(discord.ui.Modal):
+    def __init__(self, tipo: str, view):
+        super().__init__(title=f"{'🟢 Rol a DAR' if tipo == 'dar' else '🔴 Rol a QUITAR'}")
+        self.tipo = tipo
+        self.parent_view = view
+        self.input = discord.ui.TextInput(
+            label="Nombre del rol (parcial o completo)",
+            placeholder="Ej: Members, sin acceso, Admin...",
+            required=True,
+            max_length=100
+        )
+        self.add_item(self.input)
+
+    async def on_submit(self, interaction: discord.Interaction):
+        guild  = interaction.guild
+        buscar = self.input.value.lower().strip()
+
+        if self.tipo == "quitar" and buscar in ("todos", "all", "todo"):
+            self.parent_view.rol_quitar_id = "ALL"
+            await interaction.response.send_message("🗑️ Se quitarán **TODOS** los roles.", ephemeral=True)
+            return
+
+        # Buscar coincidencias
+        coincidencias = [
+            r for r in guild.roles
+            if buscar in r.name.lower()
+            and r != guild.default_role
+            and not r.managed
+            and r < guild.me.top_role
+        ]
+
+        if not coincidencias:
+            await interaction.response.send_message(
+                f"❌ No encontré ningún rol con `{self.input.value}`. Intenta de nuevo.", ephemeral=True
+            )
+            return
+
+        if len(coincidencias) == 1:
+            rol = coincidencias[0]
+            if self.tipo == "dar":
+                self.parent_view.rol_dar_id = rol.id
+                await interaction.response.send_message(f"🟢 Rol a dar: **{rol.name}**", ephemeral=True)
+            else:
+                self.parent_view.rol_quitar_id = rol.id
+                await interaction.response.send_message(f"🔴 Rol a quitar: **{rol.name}**", ephemeral=True)
+        else:
+            # Múltiples coincidencias — mostrar select con los resultados
+            opts = [
+                discord.SelectOption(label=r.name[:100], value=str(r.id))
+                for r in coincidencias[:25]
+            ]
+            view_sel = SeleccionarRolView(opts, self.tipo, self.parent_view)
+            await interaction.response.send_message(
+                f"🔍 Encontré **{len(coincidencias)}** roles. Selecciona uno:",
+                view=view_sel,
+                ephemeral=True
+            )
+
+
+class SeleccionarRolView(discord.ui.View):
+    def __init__(self, opciones, tipo, parent_view):
+        super().__init__(timeout=30)
+        self.tipo        = tipo
+        self.parent_view = parent_view
+        sel = discord.ui.Select(placeholder="Selecciona el rol...", options=opciones)
+        sel.callback = self.cb_sel
+        self.add_item(sel)
+
+    async def cb_sel(self, interaction: discord.Interaction):
+        rol_id = int(interaction.data["values"][0])
+        rol    = interaction.guild.get_role(rol_id)
+        if self.tipo == "dar":
+            self.parent_view.rol_dar_id = rol_id
+            await interaction.response.send_message(f"🟢 Rol a dar: **{rol.name if rol else rol_id}**", ephemeral=True)
+        else:
+            self.parent_view.rol_quitar_id = rol_id
+            await interaction.response.send_message(f"🔴 Rol a quitar: **{rol.name if rol else rol_id}**", ephemeral=True)
+        self.stop()
+
+
 class VerView(discord.ui.View):
     def __init__(self, ctx, member: discord.Member):
         super().__init__(timeout=60)
@@ -1862,60 +1942,39 @@ class VerView(discord.ui.View):
         if self.rol_quitar_id is None:
             self.rol_quitar_id = "ALL"
 
-        # Roles disponibles en el servidor (max 24 para dejar lugar a "TODOS")
-        roles_validos = [
-            r for r in sorted(ctx.guild.roles, key=lambda r: r.position, reverse=True)
-            if r != ctx.guild.default_role
-            and not r.managed
-            and r < ctx.guild.me.top_role
-        ][:24]
+        # ── Botón: cambiar rol a DAR ──
+        btn_dar = discord.ui.Button(
+            label="🟢 Cambiar rol a dar",
+            style=discord.ButtonStyle.primary,
+            row=0
+        )
+        btn_dar.callback = self.cb_abrir_dar
+        self.add_item(btn_dar)
 
-        # ── Select: rol a DAR ──
-        opts_dar = [
-            discord.SelectOption(
-                label=r.name[:100],
-                value=str(r.id),
-                default=(r.id == self.rol_dar_id)
-            )
-            for r in roles_validos
-        ]
-        if opts_dar:
-            sel_dar = discord.ui.Select(
-                placeholder="🟢 Rol a DAR...",
-                options=opts_dar,
-                row=0
-            )
-            sel_dar.callback = self.cb_dar
-            self.add_item(sel_dar)
+        # ── Botón: cambiar rol a QUITAR ──
+        btn_quitar = discord.ui.Button(
+            label="🔴 Cambiar rol a quitar",
+            style=discord.ButtonStyle.secondary,
+            row=0
+        )
+        btn_quitar.callback = self.cb_abrir_quitar
+        self.add_item(btn_quitar)
 
-        # ── Select: rol a QUITAR ──
-        opts_quitar = [
-            discord.SelectOption(
-                label="🗑️ TODOS los roles",
-                value="ALL",
-                default=(self.rol_quitar_id == "ALL")
-            )
-        ] + [
-            discord.SelectOption(
-                label=r.name[:100],
-                value=str(r.id),
-                default=(isinstance(self.rol_quitar_id, int) and r.id == self.rol_quitar_id)
-            )
-            for r in roles_validos
-        ]
-        sel_quitar = discord.ui.Select(
-            placeholder="🔴 Rol a QUITAR (o todos)...",
-            options=opts_quitar[:25],
+        # ── Botón: quitar TODOS ──
+        btn_todos = discord.ui.Button(
+            label="🗑️ Quitar todos los roles",
+            style=discord.ButtonStyle.secondary,
             row=1
         )
-        sel_quitar.callback = self.cb_quitar
-        self.add_item(sel_quitar)
+        btn_todos.callback = self.cb_todos
+        self.add_item(btn_todos)
 
-        # ── Botones ──
+        # ── Botón confirmar ──
         btn_ok = discord.ui.Button(label="✅ Confirmar", style=discord.ButtonStyle.success, row=2)
         btn_ok.callback = self.cb_confirmar
         self.add_item(btn_ok)
 
+        # ── Botón cancelar ──
         btn_cancel = discord.ui.Button(label="❌ Cancelar", style=discord.ButtonStyle.danger, row=2)
         btn_cancel.callback = self.cb_cancelar
         self.add_item(btn_cancel)
@@ -1926,20 +1985,15 @@ class VerView(discord.ui.View):
             return False
         return True
 
-    async def cb_dar(self, interaction: discord.Interaction):
-        self.rol_dar_id = int(interaction.data["values"][0])
-        rol = self.ctx.guild.get_role(self.rol_dar_id)
-        await interaction.response.send_message(f"🟢 Rol a dar: **{rol.name if rol else self.rol_dar_id}**", ephemeral=True)
+    async def cb_abrir_dar(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(BuscarRolModal("dar", self))
 
-    async def cb_quitar(self, interaction: discord.Interaction):
-        val = interaction.data["values"][0]
-        self.rol_quitar_id = "ALL" if val == "ALL" else int(val)
-        if val == "ALL":
-            texto = "🗑️ Se quitarán **TODOS** los roles"
-        else:
-            rol = self.ctx.guild.get_role(int(val))
-            texto = f"🔴 Rol a quitar: **{rol.name if rol else val}**"
-        await interaction.response.send_message(texto, ephemeral=True)
+    async def cb_abrir_quitar(self, interaction: discord.Interaction):
+        await interaction.response.send_modal(BuscarRolModal("quitar", self))
+
+    async def cb_todos(self, interaction: discord.Interaction):
+        self.rol_quitar_id = "ALL"
+        await interaction.response.send_message("🗑️ Se quitarán **TODOS** los roles al confirmar.", ephemeral=True)
 
     async def cb_confirmar(self, interaction: discord.Interaction):
         await interaction.response.defer()
@@ -1949,6 +2003,8 @@ class VerView(discord.ui.View):
     async def cb_cancelar(self, interaction: discord.Interaction):
         await interaction.response.send_message("❌ Cancelado.", ephemeral=True)
         self.stop()
+
+
 
 
 @bot.command(name="v")
@@ -1967,7 +2023,10 @@ async def dar_rol_arn(ctx, member: discord.Member):
         title="🔑 Dar Acceso — Configuración",
         description=(
             f"Configurando acceso para {member.mention}\n\n"
-            f"Usa los menús para cambiar la selección o confirma con los valores por defecto."
+            f"🟢 **Cambiar rol a dar** — escribe el nombre del rol\n"
+            f"🔴 **Cambiar rol a quitar** — escribe el nombre del rol\n"
+            f"🗑️ **Quitar todos** — elimina todos los roles del usuario\n\n"
+            f"O pulsa **✅ Confirmar** para usar los valores por defecto."
         ),
         color=discord.Color.blurple()
     )
