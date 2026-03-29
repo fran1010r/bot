@@ -11,6 +11,7 @@ import random
 import aiohttp
 from datetime import datetime, timezone
 from collections import defaultdict
+import functools
 
 # ─────────────────────────────────────────────────────────────
 #  LOGGING
@@ -25,6 +26,31 @@ logging.basicConfig(
     ]
 )
 log = logging.getLogger("bot")
+
+# ═══════════════════════════════════════════════════════════════
+#  PATCH GLOBAL — "by Exagonal" en TODOS los embeds automático
+#  Se inyecta ANTES de crear el bot, afecta cada embed.send()
+# ═══════════════════════════════════════════════════════════════
+_original_send = discord.abc.Messageable.send
+
+@functools.wraps(_original_send)
+async def _patched_send(self, content=None, **kwargs):
+    embed = kwargs.get("embed")
+    if embed is not None:
+        footer = embed.footer
+        if not footer or not footer.text:
+            embed.set_footer(text="by Exagonal")
+        elif "by Exagonal" not in footer.text:
+            if footer.icon_url:
+                embed.set_footer(
+                    text=footer.text + " | by Exagonal",
+                    icon_url=footer.icon_url
+                )
+            else:
+                embed.set_footer(text=footer.text + " | by Exagonal")
+    return await _original_send(self, content=content, **kwargs)
+
+discord.abc.Messageable.send = _patched_send
 
 # ─────────────────────────────────────────────────────────────
 #  CARGAR CONFIG.JSON
@@ -126,23 +152,19 @@ ANTINUKE_DEFAULT = {
 }
 
 def _cargar_db_antinuke() -> dict:
-    """Carga el archivo completo (todos los servidores)."""
     if os.path.exists(ANTINUKE_FILE):
         with open(ANTINUKE_FILE, "r", encoding="utf-8") as f:
             return json.load(f)
     return {}
 
 def _guardar_db_antinuke(db: dict):
-    """Guarda el archivo completo (todos los servidores)."""
     with open(ANTINUKE_FILE, "w", encoding="utf-8") as f:
         json.dump(db, f, indent=2, ensure_ascii=False)
 
 def cargar_antinuke(guild_id: int = None) -> dict:
-    """Carga la config del AntiNuke para un servidor específico."""
     db = _cargar_db_antinuke()
     key = str(guild_id) if guild_id else "__global__"
     data = db.get(key, {})
-    # Rellenar claves faltantes con defaults
     import copy
     resultado = copy.deepcopy(ANTINUKE_DEFAULT)
     for k, v in data.items():
@@ -153,7 +175,6 @@ def cargar_antinuke(guild_id: int = None) -> dict:
     return resultado
 
 def guardar_antinuke(cfg: dict, guild_id: int = None):
-    """Guarda la config del AntiNuke para un servidor específico."""
     db = _cargar_db_antinuke()
     key = str(guild_id) if guild_id else "__global__"
     db[key] = cfg
@@ -161,8 +182,8 @@ def guardar_antinuke(cfg: dict, guild_id: int = None):
 
 # Contadores { guild_id: { user_id: [(timestamp, accion), ...] } }
 _acciones      = defaultdict(lambda: defaultdict(list))
-_joins_recents = defaultdict(list)   # por guild
-_spam_tracker  = defaultdict(lambda: defaultdict(list))  # por guild
+_joins_recents = defaultdict(list)
+_spam_tracker  = defaultdict(lambda: defaultdict(list))
 
 def registrar_accion(user_id: int, tipo: str, guild_id: int = 0) -> int:
     cfg     = cargar_antinuke(guild_id)
@@ -175,7 +196,6 @@ def registrar_accion(user_id: int, tipo: str, guild_id: int = 0) -> int:
     return sum(1 for _, a in _acciones[guild_id][user_id] if a == tipo)
 
 def es_seguro(user_id: int, guild: discord.Guild) -> bool:
-    """Comprueba whitelist SOLO del servidor actual."""
     cfg = cargar_antinuke(guild.id)
     if guild.owner_id == user_id:
         return True
@@ -196,7 +216,6 @@ async def ejecutar_castigo(guild: discord.Guild, member, razon: str, accion: str
     cfg = cargar_antinuke(guild.id)
     if accion is None:
         accion = cfg.get("accion", "ban")
-    # Si member es solo un ID, intentar obtener el objeto
     if isinstance(member, int):
         try:
             member = await guild.fetch_member(member)
@@ -220,7 +239,7 @@ async def ejecutar_castigo(guild: discord.Guild, member, razon: str, accion: str
                 await member.remove_roles(*roles, reason=f"[AntiNuke] {razon}")
         log.warning(f"[AntiNuke] {accion.upper()} a {member} — {razon}")
     except discord.Forbidden:
-        log.error(f"[AntiNuke] Sin permisos para {accion} a {member}. ¿El rol del bot está arriba en la jerarquía?")
+        log.error(f"[AntiNuke] Sin permisos para {accion} a {member}.")
     except Exception as e:
         log.error(f"[AntiNuke] No pude aplicar castigo a {member}: {e}")
 
@@ -259,7 +278,6 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
             return
         count = registrar_accion(autor.id, "ban", guild.id)
 
-        # ── Desbanear a la víctima inmediatamente ──
         try:
             await guild.unban(user, reason=f"[AntiNuke] Ban no autorizado por {autor}")
             await log_antinuke(guild, "♻️ Ban Revertido",
@@ -268,7 +286,6 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
         except Exception as e:
             log.error(f"[AntiNuke] No pude desbanear a {user}: {e}")
 
-        # ── Castigar al que baneó ──
         try:
             m = guild.get_member(autor.id) or await guild.fetch_member(autor.id)
         except Exception:
@@ -278,7 +295,6 @@ async def on_member_ban(guild: discord.Guild, user: discord.User):
             await log_antinuke(guild, "🔨 Ban No Autorizado Detectado",
                 f"**Usuario:** {autor.mention} (`{autor.id}`)\n**Bans en ventana:** {count}\n**Acción:** `{cfg['accion']}`")
         else:
-            # Si ya no está en el server, banear por ID directamente
             try:
                 await guild.ban(discord.Object(id=autor.id), reason=f"[AntiNuke] Ban no autorizado ({count} bans)")
                 await log_antinuke(guild, "🔨 Ban No Autorizado (por ID)",
@@ -305,7 +321,6 @@ async def on_member_remove(member: discord.Member):
             return
         count = registrar_accion(autor.id, "kick", member.guild.id)
 
-        # ── Castigar al que kickeó desde el primer kick ──
         try:
             m = member.guild.get_member(autor.id) or await member.guild.fetch_member(autor.id)
         except Exception:
@@ -339,7 +354,6 @@ async def on_guild_role_delete(role: discord.Role):
             return
         count = registrar_accion(autor.id, "roles", role.guild.id)
 
-        # ── Restaurar el rol eliminado ──
         try:
             nuevo_rol = await role.guild.create_role(
                 name=role.name,
@@ -349,7 +363,6 @@ async def on_guild_role_delete(role: discord.Role):
                 permissions=role.permissions,
                 reason=f"[AntiNuke] Restaurando rol eliminado por {autor}"
             )
-            # Intentar restaurar la posición
             try:
                 await nuevo_rol.edit(position=role.position)
             except Exception:
@@ -384,7 +397,6 @@ async def on_guild_role_create(role: discord.Role):
             return
         count = registrar_accion(autor.id, "roles", role.guild.id)
 
-        # ── Eliminar el rol creado no autorizado ──
         try:
             await role.delete(reason=f"[AntiNuke] Rol no autorizado creado por {autor}")
             await log_antinuke(role.guild, "🗑️ Rol No Autorizado Eliminado",
@@ -404,7 +416,7 @@ async def on_guild_role_create(role: discord.Role):
 
 @bot.event
 async def on_guild_role_update(before: discord.Role, after: discord.Role):
-    pass  # Reservado para uso futuro
+    pass
 
 @bot.event
 async def on_guild_channel_delete(channel):
@@ -421,11 +433,8 @@ async def on_guild_channel_delete(channel):
             return
         count = registrar_accion(autor.id, "canales", channel.guild.id)
 
-        # ── Restaurar el canal eliminado ──
         try:
-            # Guardar overwrites (permisos del canal)
             overwrites = channel.overwrites
-
             if isinstance(channel, discord.TextChannel):
                 nuevo_canal = await channel.guild.create_text_channel(
                     name=channel.name,
@@ -458,13 +467,10 @@ async def on_guild_channel_delete(channel):
                     category=channel.category,
                     reason=f"[AntiNuke] Restaurando canal eliminado por {autor}"
                 )
-
-            # Intentar restaurar posición
             try:
                 await nuevo_canal.edit(position=channel.position)
             except Exception:
                 pass
-
             await log_antinuke(channel.guild, "♻️ Canal Restaurado",
                 f"**Canal:** `#{channel.name}`\n**Eliminado por:** {autor.mention}\n**Restaurado:** {nuevo_canal.mention}",
                 color=0x00FF88)
@@ -495,7 +501,6 @@ async def on_guild_channel_create(channel):
             return
         count = registrar_accion(autor.id, "canales", channel.guild.id)
 
-        # ── Eliminar el canal creado no autorizado ──
         try:
             nombre = channel.name
             await channel.delete(reason=f"[AntiNuke] Canal no autorizado creado por {autor}")
@@ -513,7 +518,6 @@ async def on_guild_channel_create(channel):
                     f"**Usuario:** {autor.mention}\n**Canales creados:** {count}\n**Acción:** `{cfg['accion']}`")
     except Exception as e:
         log.error(f"[AntiNuke] on_guild_channel_create: {e}")
-
 
 @bot.event
 async def on_webhooks_update(channel):
@@ -542,7 +546,6 @@ async def on_webhooks_update(channel):
 async def on_member_join(member: discord.Member):
     cfg = cargar_antinuke(member.guild.id)
 
-    # ── AntiBot ──
     if cfg.get("antibot", {}).get("activo") and member.bot:
         try:
             entry = await member.guild.audit_logs(limit=1, action=discord.AuditLogAction.bot_add).next()
@@ -555,14 +558,12 @@ async def on_member_join(member: discord.Member):
         except Exception:
             pass
 
-    # ── AntiRaid ──
     ar = cfg.get("antiraid", {})
     if ar.get("activo"):
         ahora   = time.time()
         gid     = member.guild.id
         ventana = ar.get("joins_ventana", 10)
         _joins_recents[gid].append(ahora)
-        # Limpiar fuera de ventana
         while _joins_recents[gid] and ahora - _joins_recents[gid][0] > ventana:
             _joins_recents[gid].pop(0)
         if len(_joins_recents[gid]) >= ar.get("joins_limite", 10):
@@ -578,7 +579,6 @@ async def on_member_join(member: discord.Member):
                 f"**Joins en {ventana}s:** {len(_joins_recents[gid])}\n**Último:** {member.mention}\n**Acción:** `{accion}`",
                 color=0xFF4400)
 
-    # ── Verificación ──
     ver = cfg.get("verificacion", {})
     if ver.get("activo") and ver.get("rol_no_verificado"):
         rol = member.guild.get_role(int(ver["rol_no_verificado"]))
@@ -596,7 +596,6 @@ async def on_message(message: discord.Message):
 
     cfg = cargar_antinuke(message.guild.id)
 
-    # ── AntiLinks ──
     al = cfg.get("antilinks", {})
     if al.get("activo"):
         wl_canales = [int(x) for x in al.get("whitelist_canales", [])]
@@ -615,7 +614,6 @@ async def on_message(message: discord.Message):
                 pass
             return
 
-    # ── AntiSpam ──
     asp = cfg.get("antispam", {})
     if asp.get("activo") and not es_seguro(message.author.id, message.guild):
         ahora   = time.time()
@@ -682,11 +680,9 @@ async def on_raw_reaction_add(payload: discord.RawReactionActionEvent):
 @bot.command(name="antinuke")
 @commands.check(es_owner_an)
 async def antinuke_status(ctx):
-    """👑 OWNER — Estado del AntiNuke."""
     cfg    = cargar_antinuke(ctx.guild.id)
     estado = "✅ Activo" if cfg["activo"] else "❌ Desactivado"
 
-    # Mostrar SOLO los que están en este servidor
     wl = cfg.get("whitelist", [])
     wl_members = []
     for uid in wl:
@@ -716,13 +712,11 @@ async def antinuke_status(ctx):
     embed.add_field(name=f"Whitelist ({len(wl_members)})", value=wl_txt, inline=False)
     log_ch = cfg.get("log_channel")
     embed.add_field(name="Canal logs", value=f"<#{log_ch}>" if log_ch else "No configurado", inline=False)
-    embed.set_footer(text=f"Servidor: {ctx.guild.name} | Usa !an_ayuda para ver todos los comandos")
     await ctx.send(embed=embed)
 
 @bot.command(name="an_ayuda")
 @commands.check(es_owner_an)
 async def an_ayuda(ctx):
-    """👑 OWNER — Lista de comandos AntiNuke."""
     p = PREFIX
     embed = discord.Embed(title="🛡️ AntiNuke — Comandos", color=0x00FF88)
     embed.add_field(name="⚙️ General",
@@ -782,11 +776,9 @@ async def an_desactivar(ctx):
 @bot.command(name="an_whitelist")
 @commands.check(es_owner_an)
 async def an_whitelist(ctx, member: discord.Member = None):
-    """👑 OWNER — Añade/quita de whitelist o muestra la lista. !an_whitelist [@user]"""
     cfg = cargar_antinuke(ctx.guild.id)
     wl  = cfg.get("whitelist", [])
 
-    # Sin argumento → mostrar lista del servidor actual
     if member is None:
         wl_members = []
         for uid in wl:
@@ -798,7 +790,6 @@ async def an_whitelist(ctx, member: discord.Member = None):
             description="\n".join(wl_members) if wl_members else "Nadie en la whitelist.",
             color=0x00FF88
         )
-        embed.set_footer(text=f"Solo se muestran miembros de este servidor")
         return await ctx.send(embed=embed)
 
     uid = str(member.id)
@@ -821,7 +812,6 @@ async def an_whitelist(ctx, member: discord.Member = None):
             color=discord.Color.green()
         )
     embed.set_thumbnail(url=member.display_avatar.url)
-    embed.set_footer(text=f"Por {ctx.author.display_name} | Solo aplica en este servidor")
     await ctx.send(embed=embed)
 
 @bot.command(name="an_accion")
@@ -986,7 +976,6 @@ async def an_antibot_off(ctx):
 @bot.command(name="an_ver_setup")
 @commands.check(es_owner_an)
 async def an_ver_setup(ctx, canal: discord.TextChannel, rol_ver: discord.Role, rol_no_ver: discord.Role = None):
-    """Setup verificación. !an_ver_setup #canal @rol_verificado [@rol_no_verificado]"""
     cfg = cargar_antinuke(ctx.guild.id)
     cfg.setdefault("verificacion", {}).update({
         "canal": str(canal.id),
@@ -994,7 +983,6 @@ async def an_ver_setup(ctx, canal: discord.TextChannel, rol_ver: discord.Role, r
         "rol_no_verificado": str(rol_no_ver.id) if rol_no_ver else None,
     })
     guardar_antinuke(cfg, ctx.guild.id)
-    # Enviar mensaje de verificación
     embed = discord.Embed(
         title="✅ Verificación",
         description=f"Reacciona con ✅ para verificarte y acceder al servidor.",
@@ -1033,7 +1021,6 @@ def guardar_warns(data: dict):
 @bot.command(name="warn")
 @commands.check(es_staff)
 async def warn(ctx, member: discord.Member, *, razon: str = "Sin razón"):
-    """⚠️ STAFF — Advierte a un usuario."""
     if member.guild_permissions.administrator:
         return await ctx.send("❌ No puedes advertir a un administrador.")
     data = cargar_warns()
@@ -1048,12 +1035,11 @@ async def warn(ctx, member: discord.Member, *, razon: str = "Sin razón"):
     guardar_warns(data)
     total = len(data[uid])
     embed = discord.Embed(title="⚠️ Advertencia", color=discord.Color.orange())
-    embed.add_field(name="👤 Usuario",  value=member.mention,  inline=True)
-    embed.add_field(name="📋 Razón",    value=razon,            inline=True)
+    embed.add_field(name="👤 Usuario",  value=member.mention,    inline=True)
+    embed.add_field(name="📋 Razón",    value=razon,              inline=True)
     embed.add_field(name="📊 Total",    value=f"{total} warn(s)", inline=True)
     embed.add_field(name="👮 Por",      value=ctx.author.mention, inline=True)
     await ctx.send(embed=embed)
-    # Auto-castigo
     if total >= 5:
         await ctx.guild.ban(member, reason="[AutoWarn] 5 advertencias")
         await ctx.send(f"🔨 {member.mention} fue baneado automáticamente por alcanzar 5 warns.")
@@ -1069,7 +1055,6 @@ async def warn(ctx, member: discord.Member, *, razon: str = "Sin razón"):
 @bot.command(name="warns")
 @commands.check(es_staff)
 async def ver_warns(ctx, member: discord.Member = None):
-    """⚠️ STAFF — Ver advertencias de un usuario."""
     member = member or ctx.author
     data   = cargar_warns()
     lista  = data.get(str(member.id), [])
@@ -1089,7 +1074,6 @@ async def ver_warns(ctx, member: discord.Member = None):
 @bot.command(name="clearwarns", aliases=["limpiarwarns"])
 @commands.check(es_admin)
 async def clearwarns(ctx, member: discord.Member):
-    """🔒 ADMIN — Borra todas las advertencias de un usuario."""
     data = cargar_warns()
     data.pop(str(member.id), None)
     guardar_warns(data)
@@ -1098,7 +1082,6 @@ async def clearwarns(ctx, member: discord.Member):
 @bot.command(name="delwarn")
 @commands.check(es_admin)
 async def delwarn(ctx, member: discord.Member, numero: int):
-    """🔒 ADMIN — Borra un warn específico. Uso: !delwarn @user 2"""
     data = cargar_warns()
     uid  = str(member.id)
     lista = data.get(uid, [])
@@ -1262,7 +1245,6 @@ async def horoscopo(ctx, *, signo: str):
     embed.add_field(name="🍀 Suerte", value=f"{random.randint(1,100)}%", inline=True)
     embed.add_field(name="✨ Personalidad", value=desc, inline=False)
     embed.add_field(name="🔮 Predicción", value=random.choice(PREDICCIONES), inline=False)
-    embed.set_footer(text=f"Consultado por {ctx.author.display_name}")
     await ctx.send(embed=embed)
 
 TIPOS_PERSONALIDAD = [
@@ -1337,7 +1319,6 @@ async def trivia(ctx):
     nums = ["1️⃣","2️⃣","3️⃣","4️⃣"]
     desc = "\n".join(f"{nums[i]} {op.capitalize()}" for i, op in enumerate(ops))
     embed = discord.Embed(title="🃏 Trivia", description=f"**{p['p']}**\n\n{desc}", color=discord.Color.blurple())
-    embed.set_footer(text="Reacciona en 20 segundos")
     msg = await ctx.send(embed=embed)
     for emoji in nums[:len(ops)]: await msg.add_reaction(emoji)
     juegos_activos[ctx.channel.id] = True
@@ -1410,7 +1391,6 @@ async def frase_personaje(ctx, *, personaje: str = None):
     frase = random.choice(FRASES_PERSONAJES[personaje])
     colores = [discord.Color.red(), discord.Color.blue(), discord.Color.green(), discord.Color.purple(), discord.Color.orange()]
     embed = discord.Embed(title=f"💬 {personaje.capitalize()}", description=f"*\"{frase}\"*", color=random.choice(colores))
-    embed.set_footer(text=f"Pedido por {ctx.author.display_name}")
     await ctx.send(embed=embed)
 
 @bot.command(name="personajes_lista", aliases=["pl"])
@@ -1431,7 +1411,6 @@ async def lock(ctx, canal: discord.TextChannel = None, *, razon: str = "Sin raz�
     ow = canal.overwrites_for(ctx.guild.default_role); ow.send_messages = False
     await canal.set_permissions(ctx.guild.default_role, overwrite=ow, reason=f"[{ctx.author}] {razon}")
     embed = discord.Embed(title="🔒 Canal Bloqueado", description=f"{canal.mention}\n📋 {razon}", color=discord.Color.red())
-    embed.set_footer(text=f"Por {ctx.author.display_name}")
     await canal.send(embed=embed)
     if canal != ctx.channel: await ctx.send(f"✅ {canal.mention} bloqueado.")
 
@@ -1442,7 +1421,6 @@ async def unlock(ctx, canal: discord.TextChannel = None, *, razon: str = "Sin ra
     ow = canal.overwrites_for(ctx.guild.default_role); ow.send_messages = None
     await canal.set_permissions(ctx.guild.default_role, overwrite=ow, reason=f"[{ctx.author}] {razon}")
     embed = discord.Embed(title="🔓 Canal Desbloqueado", description=f"{canal.mention}\n📋 {razon}", color=discord.Color.green())
-    embed.set_footer(text=f"Por {ctx.author.display_name}")
     await canal.send(embed=embed)
     if canal != ctx.channel: await ctx.send(f"✅ {canal.mention} desbloqueado.")
 
@@ -1457,7 +1435,6 @@ async def lockall(ctx, *, razon: str = "Sin razón"):
             await c.set_permissions(ctx.guild.default_role, overwrite=ow); count += 1
         except Exception: pass
     embed = discord.Embed(title="🔒 Servidor Bloqueado", description=f"**{count}** canales bloqueados.\n📋 {razon}", color=discord.Color.red())
-    embed.set_footer(text=f"Por {ctx.author.display_name}")
     await msg.edit(content=None, embed=embed)
 
 @bot.command(name="unlockall", aliases=["desbloquear_todo"])
@@ -1471,7 +1448,6 @@ async def unlockall(ctx, *, razon: str = "Sin razón"):
             await c.set_permissions(ctx.guild.default_role, overwrite=ow); count += 1
         except Exception: pass
     embed = discord.Embed(title="🔓 Servidor Desbloqueado", description=f"**{count}** canales.\n📋 {razon}", color=discord.Color.green())
-    embed.set_footer(text=f"Por {ctx.author.display_name}")
     await msg.edit(content=None, embed=embed)
 
 @bot.command(name="slowmode", aliases=["sm","modo_lento"])
@@ -1544,14 +1520,12 @@ async def nsfw_toggle(ctx, canal: discord.TextChannel = None):
 
 
 # ═════════════════════════════════════════════════════════════
-#  🎭 GESTIÓN DE ROLES (Admin) — ARREGLADO
+#  🎭 GESTIÓN DE ROLES (Admin)
 # ═════════════════════════════════════════════════════════════
 
 @bot.command(name="dar_rol", aliases=["dr"])
 @commands.check(es_admin)
 async def dar_rol(ctx, member: discord.Member, *, nombre_rol: str):
-    """🔒 ADMIN — Da un rol. Uso: !dr @usuario Nombre Rol"""
-    # Buscar por nombre exacto primero, luego case-insensitive
     rol = discord.utils.get(ctx.guild.roles, name=nombre_rol)
     if not rol:
         nombre_lower = nombre_rol.lower()
@@ -1560,13 +1534,11 @@ async def dar_rol(ctx, member: discord.Member, *, nombre_rol: str):
                 rol = r
                 break
     if not rol:
-        # Mostrar roles similares
         similares = [r.name for r in ctx.guild.roles if nombre_rol.lower() in r.name.lower()][:5]
         msg = f"❌ No encontré el rol `{nombre_rol}`."
         if similares:
             msg += f"\n¿Quisiste decir? {', '.join(f'`{s}`' for s in similares)}"
         return await ctx.send(msg)
-    # Verificar jerarquía
     if rol >= ctx.guild.me.top_role:
         return await ctx.send(f"❌ No puedo dar **{rol.name}** porque está por encima de mi rol en la jerarquía.")
     if rol in member.roles:
@@ -1576,7 +1548,6 @@ async def dar_rol(ctx, member: discord.Member, *, nombre_rol: str):
         embed = discord.Embed(title="✅ Rol Dado", color=rol.color)
         embed.add_field(name="👤 Usuario", value=member.mention, inline=True)
         embed.add_field(name="🎭 Rol",     value=rol.mention,    inline=True)
-        embed.set_footer(text=f"Por {ctx.author.display_name}")
         await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Sin permisos para dar ese rol. Verifica la jerarquía del bot.")
@@ -1584,7 +1555,6 @@ async def dar_rol(ctx, member: discord.Member, *, nombre_rol: str):
 @bot.command(name="quitar_rol", aliases=["qr"])
 @commands.check(es_admin)
 async def quitar_rol(ctx, member: discord.Member, *, nombre_rol: str):
-    """🔒 ADMIN — Quita un rol. Uso: !qr @usuario Nombre Rol"""
     rol = discord.utils.get(ctx.guild.roles, name=nombre_rol)
     if not rol:
         for r in ctx.guild.roles:
@@ -1601,7 +1571,6 @@ async def quitar_rol(ctx, member: discord.Member, *, nombre_rol: str):
         embed = discord.Embed(title="✅ Rol Quitado", color=discord.Color.red())
         embed.add_field(name="👤 Usuario", value=member.mention, inline=True)
         embed.add_field(name="🎭 Rol",     value=rol.name,       inline=True)
-        embed.set_footer(text=f"Por {ctx.author.display_name}")
         await ctx.send(embed=embed)
     except discord.Forbidden:
         await ctx.send("❌ Sin permisos para quitar ese rol.")
@@ -1643,7 +1612,6 @@ async def roles_usuario(ctx, member: discord.Member = None):
 @bot.command(name="listar_roles", aliases=["lroles"])
 @commands.check(es_admin)
 async def listar_roles(ctx):
-    """🔒 ADMIN — Lista todos los roles del servidor."""
     roles = [r for r in reversed(ctx.guild.roles) if r != ctx.guild.default_role]
     if not roles: return await ctx.send("❌ Sin roles.")
     paginas = []
@@ -1663,7 +1631,6 @@ async def listar_roles(ctx):
 async def anuncio(ctx, canal: discord.TextChannel = None, *, mensaje: str):
     canal = canal or ctx.channel
     embed = discord.Embed(title="📢 Anuncio", description=mensaje, color=discord.Color.gold(), timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=f"Por {ctx.author.display_name}")
     await canal.send("@everyone", embed=embed)
     if canal != ctx.channel: await ctx.send(f"✅ Anuncio en {canal.mention}.")
 
@@ -1672,7 +1639,6 @@ async def anuncio(ctx, canal: discord.TextChannel = None, *, mensaje: str):
 async def embed_msg(ctx, canal: discord.TextChannel = None, titulo: str = "Mensaje", *, mensaje: str):
     canal = canal or ctx.channel
     embed = discord.Embed(title=titulo, description=mensaje, color=discord.Color.blurple(), timestamp=datetime.now(timezone.utc))
-    embed.set_footer(text=f"Por {ctx.author.display_name}")
     await canal.send(embed=embed)
     if canal != ctx.channel: await ctx.send(f"✅ Embed en {canal.mention}.")
 
@@ -1698,7 +1664,6 @@ async def ban_cmd(ctx, member: discord.Member, *, razon: str = "Sin razón"):
 @bot.command(name="unban")
 @commands.check(es_admin)
 async def unban_cmd(ctx, *, usuario: str):
-    """🔒 ADMIN — Desbanear. Uso: !unban usuario#0000 o ID"""
     bans = [entry async for entry in ctx.guild.bans()]
     objetivo = None
     for entry in bans:
@@ -1734,10 +1699,10 @@ async def mute_cmd(ctx, member: discord.Member, minutos: int = 10, *, razon: str
         await member.timeout(until, reason=f"[{ctx.author}] {razon}")
     except discord.Forbidden: return await ctx.send("❌ Sin permisos.")
     embed = discord.Embed(title="🔇 Muteado", color=discord.Color.dark_grey())
-    embed.add_field(name="👤 Usuario",   value=member.mention,         inline=True)
-    embed.add_field(name="⏰ Duración",  value=f"{minutos} min",       inline=True)
-    embed.add_field(name="📋 Razón",     value=razon,                  inline=True)
-    embed.add_field(name="👮 Por",       value=ctx.author.mention,     inline=True)
+    embed.add_field(name="👤 Usuario",   value=member.mention,     inline=True)
+    embed.add_field(name="⏰ Duración",  value=f"{minutos} min",   inline=True)
+    embed.add_field(name="📋 Razón",     value=razon,              inline=True)
+    embed.add_field(name="👮 Por",       value=ctx.author.mention, inline=True)
     await ctx.send(embed=embed)
 
 @bot.command(name="unmute")
@@ -1758,7 +1723,6 @@ async def limpiar(ctx, cantidad: int = 10):
 @bot.command(name="limpiar_bots", aliases=["purgebots"])
 @commands.check(es_admin)
 async def limpiar_bots(ctx, cantidad: int = 50):
-    """🔒 ADMIN — Borra mensajes de bots."""
     def es_bot_msg(m): return m.author.bot
     borrados = await ctx.channel.purge(limit=cantidad, check=es_bot_msg)
     msg = await ctx.send(f"🤖 **{len(borrados)}** mensajes de bots borrados.")
@@ -1767,7 +1731,6 @@ async def limpiar_bots(ctx, cantidad: int = 50):
 @bot.command(name="limpiar_usuario", aliases=["purgeuser"])
 @commands.check(es_admin)
 async def limpiar_usuario(ctx, member: discord.Member, cantidad: int = 50):
-    """🔒 ADMIN — Borra mensajes de un usuario específico."""
     def es_usuario(m): return m.author == member
     borrados = await ctx.channel.purge(limit=cantidad, check=es_usuario)
     msg = await ctx.send(f"🗑️ **{len(borrados)}** mensajes de {member.mention} borrados.")
@@ -1802,12 +1765,9 @@ async def serverinfo(ctx):
     embed.add_field(name="💎 Boosts",   value=g.premium_subscription_count, inline=True)
     await ctx.send(embed=embed)
 
-# ── Nicks ──────────────────────────────────────────────────────
-
 @bot.command(name="nick", aliases=["apodo"])
 @commands.check(es_admin)
 async def nick(ctx, member: discord.Member, *, nuevo: str = None):
-    """🔒 ADMIN — Cambia el nick de un usuario. !nick @user nuevo_nick"""
     try:
         viejo = member.display_name
         await member.edit(nick=nuevo)
@@ -1821,7 +1781,6 @@ async def nick(ctx, member: discord.Member, *, nuevo: str = None):
 @bot.command(name="massnick")
 @commands.check(es_admin)
 async def massnick(ctx, *, nuevo: str):
-    """🔒 ADMIN — Cambia el nick de todos los miembros. ¡Cuidado!"""
     msg = await ctx.send(f"⏳ Cambiando nicks de **{ctx.guild.member_count}** miembros...")
     count = 0
     for m in ctx.guild.members:
@@ -1835,18 +1794,17 @@ async def massnick(ctx, *, nuevo: str):
 #  🔒 COMANDO !v — DAR ROL ARN (Solo Admin)
 # ═════════════════════════════════════════════════════════════
 
-# Roles por servidor
 ROLES_POR_SERVIDOR = {
-    1476763559982534829: {  # yakz ; f SOON
-        "dar":    1477556485092544532,  # Members
-        "quitar": 1479630235283624049,  # sin acceso
+    1476763559982534829: {
+        "dar":    1477556485092544532,
+        "quitar": 1479630235283624049,
     },
-    1473493322403414280: {  # /rage
-        "dar":    1473493514770972922,  # /arn
+    1473493322403414280: {
+        "dar":    1473493514770972922,
         "quitar": None,
     },
-    1480185559145250907: {  # /rage (servidor 2)
-        "dar":    1473493514770972922,  # /arn
+    1480185559145250907: {
+        "dar":    1473493514770972922,
         "quitar": None,
     },
 }
@@ -1873,7 +1831,6 @@ class BuscarRolModal(discord.ui.Modal):
             await interaction.response.send_message("🗑️ Se quitarán **TODOS** los roles.", ephemeral=True)
             return
 
-        # Buscar coincidencias
         coincidencias = [
             r for r in guild.roles
             if buscar in r.name.lower()
@@ -1897,7 +1854,6 @@ class BuscarRolModal(discord.ui.Modal):
                 self.parent_view.rol_quitar_id = rol.id
                 await interaction.response.send_message(f"🔴 Rol a quitar: **{rol.name}**", ephemeral=True)
         else:
-            # Múltiples coincidencias — mostrar select con los resultados
             opts = [
                 discord.SelectOption(label=r.name[:100], value=str(r.id))
                 for r in coincidencias[:25]
@@ -1942,39 +1898,22 @@ class VerView(discord.ui.View):
         if self.rol_quitar_id is None:
             self.rol_quitar_id = "ALL"
 
-        # ── Botón: cambiar rol a DAR ──
-        btn_dar = discord.ui.Button(
-            label="🟢 Cambiar rol a dar",
-            style=discord.ButtonStyle.primary,
-            row=0
-        )
+        btn_dar = discord.ui.Button(label="🟢 Cambiar rol a dar", style=discord.ButtonStyle.primary, row=0)
         btn_dar.callback = self.cb_abrir_dar
         self.add_item(btn_dar)
 
-        # ── Botón: cambiar rol a QUITAR ──
-        btn_quitar = discord.ui.Button(
-            label="🔴 Cambiar rol a quitar",
-            style=discord.ButtonStyle.secondary,
-            row=0
-        )
+        btn_quitar = discord.ui.Button(label="🔴 Cambiar rol a quitar", style=discord.ButtonStyle.secondary, row=0)
         btn_quitar.callback = self.cb_abrir_quitar
         self.add_item(btn_quitar)
 
-        # ── Botón: quitar TODOS ──
-        btn_todos = discord.ui.Button(
-            label="🗑️ Quitar todos los roles",
-            style=discord.ButtonStyle.secondary,
-            row=1
-        )
+        btn_todos = discord.ui.Button(label="🗑️ Quitar todos los roles", style=discord.ButtonStyle.secondary, row=1)
         btn_todos.callback = self.cb_todos
         self.add_item(btn_todos)
 
-        # ── Botón confirmar ──
         btn_ok = discord.ui.Button(label="✅ Confirmar", style=discord.ButtonStyle.success, row=2)
         btn_ok.callback = self.cb_confirmar
         self.add_item(btn_ok)
 
-        # ── Botón cancelar ──
         btn_cancel = discord.ui.Button(label="❌ Cancelar", style=discord.ButtonStyle.danger, row=2)
         btn_cancel.callback = self.cb_cancelar
         self.add_item(btn_cancel)
@@ -2005,13 +1944,9 @@ class VerView(discord.ui.View):
         self.stop()
 
 
-
-
 @bot.command(name="v")
 @commands.check(es_admin)
 async def dar_rol_arn(ctx, member: discord.Member):
-    """🔒 ADMIN — Da acceso con selector de roles. !v @usuario"""
-
     cfg_srv        = ROLES_POR_SERVIDOR.get(ctx.guild.id, {})
     dar_default    = cfg_srv.get("dar")
     quitar_default = cfg_srv.get("quitar")
@@ -2034,7 +1969,6 @@ async def dar_rol_arn(ctx, member: discord.Member):
     embed.add_field(name="👤 Usuario",           value=member.mention,              inline=True)
     embed.add_field(name="🟢 Rol a dar",         value=f"**{rol_dar_nombre}**",     inline=True)
     embed.add_field(name="🔴 Rol(es) a quitar",  value=f"**{rol_quitar_nombre}**",  inline=True)
-    embed.set_footer(text="Tienes 60 segundos — este mensaje se eliminará al terminar")
 
     view = VerView(ctx, member)
     msg  = await ctx.send(embed=embed, view=view)
@@ -2058,7 +1992,6 @@ async def dar_rol_arn(ctx, member: discord.Member):
     if not rol_dar:
         return await ctx.send("❌ No encontré el rol a dar.")
 
-    # ── Quitar roles ──
     roles_quitados = []
     roles_fallidos = []
 
@@ -2086,13 +2019,11 @@ async def dar_rol_arn(ctx, member: discord.Member):
                 except discord.Forbidden:
                     roles_fallidos.append(r)
 
-    # ── Dar rol ──
     try:
         await member.add_roles(rol_dar, reason=f"!v — acceso por {ctx.author}")
     except discord.Forbidden:
         return await ctx.send(f"❌ No pude asignar **{rol_dar.name}**. Sube el rol del bot en la jerarquía.")
 
-    # ── Embed resultado ──
     embed_ok = discord.Embed(title="✅ Acceso Concedido", color=discord.Color.green())
     embed_ok.set_thumbnail(url=member.display_avatar.url)
     embed_ok.add_field(name="👤 Miembro",   value=member.mention,        inline=True)
@@ -2110,7 +2041,6 @@ async def dar_rol_arn(ctx, member: discord.Member):
             value=", ".join(f"`{r.name}`" for r in roles_fallidos),
             inline=False
         )
-    embed_ok.set_footer(text="Este mensaje se eliminará en 15 segundos")
     msg_ok = await ctx.send(embed=embed_ok)
     await asyncio.sleep(15)
     await msg_ok.delete()
@@ -2123,8 +2053,6 @@ async def dar_rol_arn_error(ctx, error):
         await ctx.send("❌ Usuario no encontrado.")
     elif isinstance(error, commands.CheckFailure):
         await ctx.send("🔒 Solo administradores.")
-
-
 
 
 # ═════════════════════════════════════════════════════════════
@@ -2234,7 +2162,6 @@ async def clima(ctx, *, ciudad: str):
                 embed.add_field(name="💧 Humedad",   value=f"{actual['humidity']}%",       inline=True)
                 embed.add_field(name="💨 Viento",    value=f"{actual['windspeedKmph']} km/h", inline=True)
                 embed.add_field(name="☁️ Estado",    value=actual['weatherDesc'][0]['value'], inline=True)
-                embed.set_footer(text="wttr.in")
                 await ctx.send(embed=embed)
     except Exception: await ctx.send("❌ No pude obtener el clima.")
 
@@ -2329,7 +2256,6 @@ async def recordar(ctx, tiempo: str, *, mensaje: str):
     await asyncio.sleep(segundos)
     try:
         embed = discord.Embed(title="⏰ Recordatorio", description=mensaje, color=discord.Color.orange(), timestamp=datetime.now(timezone.utc))
-        embed.set_footer(text=f"Solicitado por {ctx.author.display_name}")
         await ctx.author.send(embed=embed)
     except Exception: pass
     await ctx.send(f"⏰ {ctx.author.mention} ¡Recordatorio! **{mensaje}**")
@@ -2413,14 +2339,12 @@ async def dado(ctx, lados: int = 6):
     resultado = random.randint(1, lados)
     embed = discord.Embed(title="🎲 Dado", color=discord.Color.blurple())
     embed.add_field(name=f"D{lados}", value=f"**{resultado}**", inline=True)
-    embed.set_footer(text=f"Tirado por {ctx.author.display_name}")
     await ctx.send(embed=embed)
 
 @bot.command(name="moneda", aliases=["coin","flip"])
 async def moneda(ctx):
     resultado = random.choice(["🪙 Cara", "🪙 Sello"])
     embed = discord.Embed(title="🪙 Moneda", description=f"**{resultado}**", color=discord.Color.gold())
-    embed.set_footer(text=f"Lanzada por {ctx.author.display_name}")
     await ctx.send(embed=embed)
 
 @bot.command(name="ruleta", aliases=["roulette"])
@@ -2442,7 +2366,6 @@ async def bola_ocho(ctx, *, pregunta: str):
     embed = discord.Embed(title="🎱 Bola Mágica", color=discord.Color.dark_purple())
     embed.add_field(name="❓ Pregunta", value=pregunta, inline=False)
     embed.add_field(name="🔮 Respuesta", value=random.choice(respuestas), inline=False)
-    embed.set_footer(text=f"Preguntado por {ctx.author.display_name}")
     await ctx.send(embed=embed)
 
 @bot.command(name="piedra", aliases=["rps"])
@@ -2465,7 +2388,6 @@ async def piedra_papel_tijera(ctx, eleccion: str):
 
 @bot.command(name="verdad_o_reto", aliases=["tor","verdad","reto"])
 async def verdad_o_reto(ctx, member: discord.Member = None):
-    """🎮 Verdad o Reto. Uso: !tor [@usuario]"""
     member = member or ctx.author
     verdades = [
         "¿Cuál es tu mayor miedo?","¿Qué es lo más embarazoso que te ha pasado?",
@@ -2484,12 +2406,10 @@ async def verdad_o_reto(ctx, member: discord.Member = None):
     contenido = random.choice(verdades) if "Verdad" in tipo else random.choice(retos)
     color = discord.Color.purple() if "Verdad" in tipo else discord.Color.orange()
     embed = discord.Embed(title=f"🎮 {tipo}", description=f"Para {member.mention}\n\n**{contenido}**", color=color)
-    embed.set_footer(text=f"Pedido por {ctx.author.display_name}")
     await ctx.send(embed=embed)
 
 @bot.command(name="acertijo", aliases=["riddle"])
 async def acertijo(ctx):
-    """🧩 Acertijo con respuesta."""
     acertijos = [
         ("Tengo ciudades, pero no hay casas. Tengo montañas, pero no hay árboles. Tengo agua, pero no hay peces. ¿Qué soy?", "Un mapa"),
         ("Cuanto más me seques, más mojado te quedas. ¿Qué soy?", "Una toalla"),
@@ -2500,8 +2420,7 @@ async def acertijo(ctx):
     ]
     pregunta, respuesta = random.choice(acertijos)
     embed = discord.Embed(title="🧩 Acertijo", description=pregunta, color=discord.Color.purple())
-    embed.set_footer(text="Responde con !respuesta <tu respuesta>")
-    msg = await ctx.send(embed=embed)
+    await ctx.send(embed=embed)
 
     def check(m): return m.channel == ctx.channel and not m.author.bot
     try:
@@ -2544,7 +2463,6 @@ async def frase_random(ctx):
 @bot.command(name="chiste", aliases=["joke"])
 async def chiste_random(ctx):
     embed = discord.Embed(title="😂 Chiste", description=random.choice(CHISTES), color=discord.Color.yellow())
-    embed.set_footer(text=f"Para {ctx.author.display_name}")
     await ctx.send(embed=embed)
 
 @bot.command(name="meme")
@@ -2556,14 +2474,13 @@ async def meme_random(ctx):
                     data = await resp.json()
                     embed = discord.Embed(title=data["title"], color=discord.Color.orange())
                     embed.set_image(url=data["url"])
-                    embed.set_footer(text=f"r/{data['subreddit']} | 👍 {data['ups']}")
-                    return await ctx.send(embed=embed)
+                    await ctx.send(embed=embed)
+                    return
     except Exception: pass
     await ctx.send("❌ No pude obtener un meme. Intenta más tarde.")
 
 @bot.command(name="rng", aliases=["random","aleatorio"])
 async def rng(ctx, minimo: int = 1, maximo: int = 100):
-    """🎲 Número aleatorio entre dos valores."""
     if minimo >= maximo: return await ctx.send("❌ El mínimo debe ser menor que el máximo.")
     resultado = random.randint(minimo, maximo)
     embed = discord.Embed(title="🎲 Número Aleatorio", color=discord.Color.blurple())
@@ -2573,10 +2490,8 @@ async def rng(ctx, minimo: int = 1, maximo: int = 100):
 
 @bot.command(name="buscar", aliases=["google","search"])
 async def buscar(ctx, *, termino: str):
-    """🔍 Genera un link de búsqueda en Google."""
     url = f"https://www.google.com/search?q={termino.replace(' ', '+')}"
     embed = discord.Embed(title=f"🔍 Buscar: {termino}", description=f"[Haz clic para buscar en Google]({url})", color=discord.Color.blue())
-    embed.set_footer(text=f"Buscado por {ctx.author.display_name}")
     await ctx.send(embed=embed)
 
 
@@ -2591,7 +2506,6 @@ async def sorteo(ctx, segundos: int, *, premio: str):
     embed = discord.Embed(title="🎁 ¡SORTEO!",
         description=f"**Premio:** {premio}\nReacciona con 🎉\n⏰ **{segundos}s**",
         color=discord.Color.gold())
-    embed.set_footer(text=f"Por {ctx.author.display_name}")
     msg = await ctx.send(embed=embed)
     await msg.add_reaction("🎉")
     await asyncio.sleep(segundos)
@@ -2615,15 +2529,12 @@ async def encuesta(ctx, *, texto: str):
     nums = ["1️⃣","2️⃣","3️⃣","4️⃣","5️⃣","6️⃣","7️⃣","8️⃣","9️⃣"]
     desc = "\n".join(f"{nums[i]} {op}" for i, op in enumerate(opciones))
     embed = discord.Embed(title=f"📊 {pregunta}", description=desc, color=discord.Color.blurple())
-    embed.set_footer(text=f"Encuesta de {ctx.author.display_name}")
     msg = await ctx.send(embed=embed)
     for i in range(len(opciones)): await msg.add_reaction(nums[i])
 
 @bot.command(name="encuesta_si_no", aliases=["yesno"])
 async def encuesta_si_no(ctx, *, pregunta: str):
-    """📊 Encuesta simple Sí/No."""
     embed = discord.Embed(title=f"📊 {pregunta}", color=discord.Color.blurple())
-    embed.set_footer(text=f"Por {ctx.author.display_name}")
     msg = await ctx.send(embed=embed)
     await msg.add_reaction("✅"); await msg.add_reaction("❌")
 
@@ -2675,7 +2586,6 @@ class AnimeView(discord.ui.View):
             gif   = await obtener_gif_anime(self.info["gif_tag"])
             msg   = self.info["msg"].format(a=self.target.display_name, b=self.autor.display_name)
             embed = discord.Embed(description=msg, color=discord.Color.pink())
-            embed.set_footer(text=f"Se han {self.accion}ado {count} veces.")
             if gif: embed.set_image(url=gif)
             await interaction.response.send_message(embed=embed); self.stop()
         async def x_cb(interaction):
@@ -2696,7 +2606,6 @@ def make_anime_cmd(accion, info):
         embed = discord.Embed(description=f"**{msg}**", color=discord.Color.pink())
         if gif: embed.set_image(url=gif)
         if member and member != ctx.author:
-            embed.set_footer(text=f"Se han {accion}ado {count} veces.")
             view = AnimeView(ctx.author, member, accion, info)
             await ctx.send(embed=embed, view=view)
         else: await ctx.send(embed=embed)
@@ -2786,7 +2695,6 @@ async def ayuda(ctx):
     embed.add_field(name="⚙️ Config",
         value=f"`{p}setprefix <nuevo>` — Cambiar prefijo",
         inline=False)
-    embed.set_footer(text="Bot multipropósito — AntiNuke completo • Usa !an_ayuda para ver los comandos de protección")
     await ctx.send(embed=embed)
 
 
